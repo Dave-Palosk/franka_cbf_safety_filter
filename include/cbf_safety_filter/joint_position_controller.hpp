@@ -27,7 +27,7 @@ using CallbackReturn = rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface
 namespace cbf_safety_filter {
 
     
-class JointPositionExampleController : public controller_interface::ControllerInterface {
+class JointPositionController : public controller_interface::ControllerInterface {
  public:
   [[nodiscard]] controller_interface::InterfaceConfiguration command_interface_configuration()
       const override;

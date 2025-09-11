@@ -79,7 +79,7 @@ def generate_launch_description():
         Node(
             package='controller_manager',
             executable='spawner',
-            arguments=['joint_position_example_controller'],
+            arguments=['joint_position_controller'],
             output='screen',
         ),
     ])

@@ -3,6 +3,9 @@
 # This script runs all scenarios found in the generated_scenarios directory
 # and forcefully cleans up Gazebo processes between each run.
 
+# Terminal command
+# exec src/franka_ros2/cbf_safety_filter/src/run_all_experiments.sh
+
 # --- Configuration ---
 PACKAGE_NAME="cbf_safety_filter"
 SCENARIO_DIR_NAME="config/generated_scenarios"
@@ -14,7 +17,7 @@ SCENARIO_DIR="$PACKAGE_DIR/$SCENARIO_DIR_NAME"
 TOTAL_SCENARIOS=$(ls -1 "$SCENARIO_DIR"/*.yaml | wc -l)
 CURRENT_SCENARIO=0
 
-ros2 launch cbf_safety_filter rviz.launch.py & RVIZ_PID=$!
+# ros2 launch cbf_safety_filter rviz.launch.py & RVIZ_PID=$!
 
 # Loop through all .yaml files in the config directory
 for scenario_file in "$SCENARIO_DIR"/*.yaml; do
@@ -32,8 +35,8 @@ for scenario_file in "$SCENARIO_DIR"/*.yaml; do
   timeout 75s ros2 launch cbf_safety_filter gazebo_joint_position_controller.launch.py \
     load_gripper:=true \
     franka_hand:='franka_hand' \
-    scenario_config_file:="$scenario_file"
-    #    headless:=True \
+    scenario_config_file:="$scenario_file" \
+    headless:=True \
 
   pkill -f 'ign gazebo' || true
   sleep 2

@@ -30,7 +30,8 @@ add_library(
         ${PROJECT_NAME}
         SHARED
         src/joint_velocity_example_controller.cpp
-        src/joint_position_example_controller.cpp)
+        src/joint_position_controller.cpp
+        src/joint_velocity_controller.cpp)
 target_include_directories(
         ${PROJECT_NAME}
         PUBLIC
