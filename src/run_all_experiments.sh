@@ -32,7 +32,7 @@ for scenario_file in "$SCENARIO_DIR"/*.yaml; do
   
   # Launch the simulation, redirecting all output to the log file.
   # The 'timeout' command is a safety net in case the simulation hangs.
-  timeout 75s ros2 launch cbf_safety_filter gazebo_joint_position_controller.launch.py \
+  timeout 65s ros2 launch cbf_safety_filter gazebo_joint_position_controller.launch.py \
     load_gripper:=true \
     franka_hand:='franka_hand' \
     scenario_config_file:="$scenario_file" \

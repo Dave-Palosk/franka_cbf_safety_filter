@@ -176,6 +176,21 @@ def prepare_launch_description():
         output='screen'
     )
 
+    # The spawner node will wait for the controller_manager to be ready, avoiding the race condition
+    joint_state_broadcaster_spawner = Node(
+        package="controller_manager",
+        executable="spawner",
+        arguments=["joint_state_broadcaster", "--controller-manager", "/controller_manager"],
+        output="screen",
+    )
+
+    joint_position_controller_spawner = Node(
+        package="controller_manager",
+        executable="spawner",
+        arguments=["joint_position_controller", "--controller-manager", "/controller_manager"],
+        output="screen",
+    )
+
     # --- Pass the scenario file to the HOCBF Node ---
     hocbf_controller_node = Node(
         package='cbf_safety_filter',
@@ -222,20 +237,20 @@ def prepare_launch_description():
         RegisterEventHandler(
                 event_handler=OnProcessExit(
                     target_action=spawn,
-                    on_exit=[load_joint_state_broadcaster],
+                    on_exit=[joint_state_broadcaster_spawner],
                 )
         ),    
         RegisterEventHandler(
             event_handler=OnProcessExit(
-                target_action=load_joint_state_broadcaster,
-                on_exit=[load_joint_position_controller],
+                target_action=joint_state_broadcaster_spawner,
+                on_exit=[joint_position_controller_spawner],
             )
         ),
 
         # Start the HOCBF controller only after the position controller is loaded and active.
         RegisterEventHandler(
             event_handler=OnProcessExit(
-                target_action=load_joint_position_controller,
+                target_action=joint_position_controller_spawner,
                 on_exit=[hocbf_controller_node]
             )
         ),

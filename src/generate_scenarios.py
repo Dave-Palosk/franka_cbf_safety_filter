@@ -149,8 +149,8 @@ def main():
     gamma_list = GAMMA_JS_RANGE
     beta_list = BETA_JS_RANGE
     if N_PARAMETERS_VARIATIONS == 1:
-        gamma_list = [10.0]
-        beta_list = [15.0]
+        gamma_list = [2.0]
+        beta_list = [3.0]
 
         initial_endpoint_positions = get_link_endpoint_positions(Q_INITIAL)
     initial_ee_pos = initial_endpoint_positions[EE_FRAME_NAME]
@@ -246,7 +246,7 @@ def main():
                             'output_data_basename': scenario_name,
                             'goal_maintolerance_m': 0.02,
                             'goal_settle_time_s': 1.5,
-                            'max_sim_duration_s': 60.0
+                            'max_sim_duration_s': 30.0
                         }
                     },
                     'obstacles': obstacles
