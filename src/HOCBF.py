@@ -564,10 +564,15 @@ class CbfControllerNode(Node):
         scenario_path = self.get_parameter('scenario_config_file').get_parameter_value().string_value
         
         # Load parameters directly from the provided YAML file
-        if not scenario_path or not os.path.exists(scenario_path):
+        if not scenario_path:
+            scenario_path = os.path.join(package_directory, "share/franka_example_controllers/config/scenario_0.yaml")
+            self.get_logger().warn(f"'scenario_config_file' parameter not set. Defaulting to {scenario_path}")
+        
+        if not os.path.exists(scenario_path):
             self.get_logger().fatal("HOCBF Node requires 'scenario_config_file', but it was not provided or file does not exist. Shutting down.")
             self.destroy_node()
             return
+
             
         with open(scenario_path, 'r') as file:
             config = yaml.safe_load(file)
