@@ -133,9 +133,9 @@ def prepare_launch_description():
     # We now create the 'gz_args' dynamically based on the 'headless' value.
     # If headless is 'True', we add '-s' for server-only mode.
     gz_args_expression = PythonExpression([
-        "'-r -s ~/franka_ros2_ws/install/cbf_safety_filter/include/worlds/fast_world.sdf' if '", headless, "' == 'True' else '-r empty.sdf'"
-
+        "'-r -s empty.sdf' if '", headless, "' == 'True' else '-r empty.sdf'"
     ])
+    # for faster simulatoin use: ~/franka_ros2_ws/install/cbf_safety_filter/include/worlds/fast_world.sdf instead of empty.sdf in headless mode
 
     pkg_ros_gz_sim = get_package_share_directory('ros_gz_sim')
     gazebo_empty_world = IncludeLaunchDescription(
@@ -171,9 +171,24 @@ def prepare_launch_description():
         output='screen'
     )
 
-    load_joint_position_example_controller = ExecuteProcess(
-        cmd=['ros2', 'control', 'load_controller', '--set-state', 'active', 'joint_position_example_controller'],
+    load_joint_position_controller = ExecuteProcess(
+        cmd=['ros2', 'control', 'load_controller', '--set-state', 'active', 'joint_position_controller'],
         output='screen'
+    )
+
+    # The spawner node will wait for the controller_manager to be ready, avoiding the race condition
+    joint_state_broadcaster_spawner = Node(
+        package="controller_manager",
+        executable="spawner",
+        arguments=["joint_state_broadcaster", "--controller-manager", "/controller_manager"],
+        output="screen",
+    )
+
+    joint_position_controller_spawner = Node(
+        package="controller_manager",
+        executable="spawner",
+        arguments=["joint_position_controller", "--controller-manager", "/controller_manager"],
+        output="screen",
     )
 
     # --- Pass the scenario file to the HOCBF Node ---
@@ -222,20 +237,20 @@ def prepare_launch_description():
         RegisterEventHandler(
                 event_handler=OnProcessExit(
                     target_action=spawn,
-                    on_exit=[load_joint_state_broadcaster],
+                    on_exit=[joint_state_broadcaster_spawner],
                 )
         ),    
         RegisterEventHandler(
             event_handler=OnProcessExit(
-                target_action=load_joint_state_broadcaster,
-                on_exit=[load_joint_position_example_controller],
+                target_action=joint_state_broadcaster_spawner,
+                on_exit=[joint_position_controller_spawner],
             )
         ),
 
         # Start the HOCBF controller only after the position controller is loaded and active.
         RegisterEventHandler(
             event_handler=OnProcessExit(
-                target_action=load_joint_position_example_controller,
+                target_action=joint_position_controller_spawner,
                 on_exit=[hocbf_controller_node]
             )
         ),

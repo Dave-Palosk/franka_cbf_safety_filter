@@ -94,6 +94,8 @@ dq_min_arm = - dq_max_arm # Symmetric limits
 q_max_arm = np.array([2.7437, 1.7837, 2.9007, -0.1518, 2.8065, 4.5169, 3.0159])
 q_min_arm = np.array([-2.7437, -1.7837, -2.9007, -3.0421, -2.8065, 0.5445, -3.0159])
 
+ACCEL_DIF_THRESHOLD = 10  # rad/s^2. If total |ddq| is less than this, try to recover.
+
 # --- Constants for dynamic gamma/beta calculation ---
 EPSILON_DENOMINATOR = 1e-6 # Avoid division by zero when h or psi are very close to zero
 GAMMA_ADJUST_BUFFER = 0.5 # Small buffer to add to min_gamma_required to prevent numerical issues or oscillations
@@ -291,22 +293,103 @@ def nominal_controller_js(q_arm_curr, dq_arm_curr, target_ee_pos_cartesian, targ
     # ddq_nominal_arm = np.clip(ddq_nominal_arm, ddq_min_arm, ddq_max_arm)
     return ddq_nominal_arm, target
 
-def joint_space_pid_controller(q_current, dq_current, q_target, dq_target):
-    """
-    A simple joint-space PD controller to track a target state.
-    """
-    Kp = 400.0
-    Kd = 40.0
-
-    error_pos = q_target - q_current
-    error_vel = dq_target - dq_current
-
-    # Calculate the desired joint acceleration
-    ddq_nominal = Kp * error_pos + Kd * error_vel
-    return ddq_nominal
-
 
 # --- Nominal Controller (MPC to Cartesian Goal) ---
+def nominal_controller_mpc(q_arm_curr, dq_arm_curr, target_ee_pos_cartesian, dt):
+    """
+    A simple kinematic MPC using CVXPY to generate a nominal joint acceleration command.
+    This controller respects joint limits but is blind to obstacles.
+    """
+    # --- MPC Parameters (Tuned for stability and speed) ---
+    N = 50          # Prediction horizon
+    Q_pos = 10.0  # Weight for end-effector position error
+    R_accel = 0.0001   # Weight for control effort
+    W_stop = 0.001   # Weight for stopping cost
+    W_jerk = 0.001    # Weight for jerk cost
+
+    # --- Setup the Optimization Problem with CVXPY ---
+    # Decision variables (control inputs)
+    ddq = cp.Variable((NUM_ARM_JOINTS, N))
+
+    # State variables (predicted trajectory)
+    q = cp.Variable((NUM_ARM_JOINTS, N + 1))
+    dq = cp.Variable((NUM_ARM_JOINTS, N + 1))
+
+    # --- Build Cost and Constraints ---
+    cost = 0
+    constraints = []
+
+    # Penalize large control inputs
+    cost += R_accel * cp.sum_squares(ddq)
+
+    # Initial state constraint
+    constraints += [q[:, 0] == q_arm_curr]
+    constraints += [dq[:, 0] == dq_arm_curr]
+
+    # System dynamics, state/input constraints, and costs over the horizon
+    max_decel = np.abs(ddq_min_arm)
+    for k in range(N):
+        # Kinematic integration (Euler)
+        q_next = q[:, k] + dq[:, k] * dt + 0.5 * ddq[:, k] * dt**2
+        dq_next = dq[:, k] + ddq[:, k] * dt
+
+        constraints += [q[:, k + 1] == q_next]
+        constraints += [dq[:, k + 1] == dq_next]
+
+        # Enforce all joint limits on the predicted trajectory
+        constraints += [q_min_arm <= q[:, k + 1], q[:, k + 1] <= q_max_arm]
+        constraints += [dq_min_arm <= dq[:, k + 1], dq[:, k + 1] <= dq_max_arm]
+        constraints += [ddq_min_arm <= ddq[:, k], ddq[:, k] <= ddq_max_arm]
+
+        # Stop Cost
+        time_to_stop = (N - 1 - k) * dt
+        dq_max_stoppable = max_decel * time_to_stop
+        velocity_overshoot = cp.pos(cp.abs(dq[:, k+1]) - dq_max_stoppable)
+        # cost += W_stop * cp.sum_squares(velocity_overshoot)
+
+        # Jerk Cost
+        # if k > 0:
+        #    cost += W_jerk * cp.sum_squares(ddq[:, k] - ddq[:, k-1])
+
+    # --- Terminal Cost (End-Effector Position) ---
+    q_full_pin = np.zeros(model.nq)
+    q_full_pin[:NUM_ARM_JOINTS] = q_arm_curr
+    pin.forwardKinematics(model, data, q_full_pin)
+    pin.computeJointJacobians(model, data, q_full_pin)
+    pin.updateFramePlacements(model, data)
+    
+    J_ee_full = pin.getFrameJacobian(model, data, EE_FRAME_ID, pin.ReferenceFrame.LOCAL_WORLD_ALIGNED)
+    J_ee_p_arm = J_ee_full[:3, :NUM_ARM_JOINTS]
+    current_ee_pos = data.oMf[EE_FRAME_ID].translation
+
+    # Linearized prediction of final EE position
+    predicted_ee_pos = current_ee_pos + J_ee_p_arm @ (q[:, N] - q_arm_curr)
+    error_pos_cart = predicted_ee_pos - target_ee_pos_cartesian
+    cost += Q_pos * cp.sum_squares(error_pos_cart)
+
+    # Terminal Constraint
+    constraints += [cp.norm(error_pos_cart, 2) <= 0.05]  # 5 cm tolerance at horizon end
+    # constraints += [cp.norm(dq[:, N], 'inf') <= 0.05]  # Also try to be nearly stopped at horizon end
+
+    # --- Solve the QP ---
+    try:
+        problem = cp.Problem(cp.Minimize(cost), constraints)
+        # Use OSQP, which is already working in your CBF filter
+        problem.solve(solver=cp.OSQP, warm_start=True, verbose=False)
+        
+        if ddq.value is not None:
+             # Return only the FIRST acceleration command from the optimal sequence
+            return ddq.value[:, 0]
+        else:
+            # Solver finished but found no solution (infeasible)
+            print("MPC problem is infeasible. Returning zero acceleration.")
+            return np.zeros(NUM_ARM_JOINTS)
+
+    except Exception as e:
+        # Solver failed catastrophically
+        print(f"MPC Solver failed with error: {e}. Returning zero acceleration.")
+        return np.zeros(NUM_ARM_JOINTS)
+'''
     
 import casadi as ca
 def nominal_controller_mpc(q_arm_curr, dq_arm_curr, target_ee_pos_cartesian, dt):
@@ -315,11 +398,11 @@ def nominal_controller_mpc(q_arm_curr, dq_arm_curr, target_ee_pos_cartesian, dt)
     This controller respects joint limits but is blind to obstacles.
     """
     # --- MPC Parameters (Tuned for stability and speed) ---
-    N = 7          # Prediction horizon (longer horizon for smoother plans)
-    Q_pos = 10.0  # Weight for end-effector position error (reduced for less aggression)
+    N = 15          # Prediction horizon (longer horizon for smoother plans)
+    Q_pos = 100.0  # Weight for end-effector position error (reduced for less aggression)
     R_accel = 0.001   # Weight for control effort (encourages smaller accelerations)
     W_stop = 0.01   # Weight for stopping cost (dampens motion near goal)
-    W_jerk = 0.1    # Weight for jerk cost (encourages smooth accelerations)
+    W_jerk = 0.05    # Weight for jerk cost (encourages smooth accelerations)
 
     # --- Setup the Optimization Problem with CasADi ---
     opti = ca.Opti()
@@ -343,16 +426,6 @@ def nominal_controller_mpc(q_arm_curr, dq_arm_curr, target_ee_pos_cartesian, dt)
     max_decel = np.abs(ddq_min_arm)
     stop_cost = 0
     jerk_cost = 0
-
-    q_full_pin = np.zeros(model.nq)
-    q_full_pin[:NUM_ARM_JOINTS] = q_arm_curr
-    pin.forwardKinematics(model, data, q_full_pin)
-    pin.computeJointJacobians(model, data, q_full_pin)
-    pin.updateFramePlacements(model, data)
-    
-    J_ee_full = pin.getFrameJacobian(model, data, EE_FRAME_ID, pin.ReferenceFrame.LOCAL_WORLD_ALIGNED)
-    J_ee_p_arm = J_ee_full[:3, :NUM_ARM_JOINTS]
-    current_ee_pos = data.oMf[EE_FRAME_ID].translation
 
     # System dynamics and state/input constraints over the horizon
     for k in range(N):
@@ -378,20 +451,26 @@ def nominal_controller_mpc(q_arm_curr, dq_arm_curr, target_ee_pos_cartesian, dt)
         if k > 0:
             jerk_cost += ca.sumsqr(ddq[:, k] - ddq[:, k-1])
 
-        # --- Terminal Cost (End-Effector Position) ---
-        predicted_ee_pos = current_ee_pos + J_ee_p_arm @ (q[:, k] - q_arm_curr)
-        error_pos_cart = predicted_ee_pos - target_ee_pos_cartesian
-        cost += Q_pos**(k/2) * ca.sumsqr(error_pos_cart)
-
     # cost += W_stop * stop_cost
-    cost += W_jerk * jerk_cost
+    # cost += W_jerk * jerk_cost
 
-    # Terminal Constraint only if the initial error_pos_cart is small enough
-    # if np.linalg.norm(target_ee_pos_cartesian - current_ee_pos) < 0.2:
-    #     opti.subject_to(error_pos_cart < 0.01)
-    #     opti.subject_to(error_pos_cart > -0.01)
-    #     opti.subject_to(dq[:, N] <= 0.005)
-    #     opti.subject_to(dq[:, N] >= -0.005)
+        # --- Terminal Cost (End-Effector Position) ---
+        q_full_pin = np.zeros(model.nq)
+        q_full_pin[:NUM_ARM_JOINTS] = q_arm_curr
+        pin.forwardKinematics(model, data, q_full_pin)
+        pin.computeJointJacobians(model, data, q_full_pin)
+        pin.updateFramePlacements(model, data)
+        
+        J_ee_full = pin.getFrameJacobian(model, data, EE_FRAME_ID, pin.ReferenceFrame.LOCAL_WORLD_ALIGNED)
+        J_ee_p_arm = J_ee_full[:3, :NUM_ARM_JOINTS]
+        current_ee_pos = data.oMf[EE_FRAME_ID].translation
+
+        predicted_ee_pos = current_ee_pos + J_ee_p_arm @ (q[:, N] - q_arm_curr)
+        error_pos_cart = predicted_ee_pos - target_ee_pos_cartesian
+        cost += Q_pos*k * ca.sumsqr(error_pos_cart)
+
+    # Terminal Constraint
+    opti.subject_to(error_pos_cart < 0.01)
 
     opti.minimize(cost)
 
@@ -403,15 +482,14 @@ def nominal_controller_mpc(q_arm_curr, dq_arm_curr, target_ee_pos_cartesian, dt)
 
     try:
         sol = opti.solve()
-        # ddq_nominal_arm = sol.value(ddq[:, 0])
-        planned_q = sol.value(q)
-        planned_dq = sol.value(dq)
-        
-        return planned_q, planned_dq
+        ddq_nominal_arm = sol.value(ddq[:, 0])
+        # Double integration to get joint position
+        q_nominal_arm = q_arm_curr + dq_arm_curr*dt + 0.5*ddq_nominal_arm**2
+        return ddq_nominal_arm
     except RuntimeError:
-        print("MPC Solver failed. Returning None.")
-        return None, None
-    
+        print("MPC Solver failed. Returning zero acceleration.")
+        return np.zeros(NUM_ARM_JOINTS)
+'''
 
 # --- HOCBF-QP Safety Filter ---
 def solve_hocbf_qp_js(dt_val, q_full_curr, dq_full_curr, ddq_nominal_arm_val, current_gamma_js_val, current_beta_js_val, d_margin, current_obstacles_list_sim, active_links_list, node_logger):
@@ -554,6 +632,141 @@ def solve_hocbf_qp_js(dt_val, q_full_curr, dq_full_curr, ddq_nominal_arm_val, cu
     return np.array(ddq_safe_arm_val).flatten(), qp_solved_successfully
 
 
+# --- HOCBF-QP RECOVERY Safety Filter ---
+def solve_recovery_qp_js(dt_val, q_full_curr, dq_full_curr, ddq_nominal_arm_val, current_gamma_js_val, current_beta_js_val, d_margin, current_obstacles_list_sim, active_links_list, node_logger):
+    """
+    This QP is triggered when the standard QP results in very slow motion.
+    It infers the desired EE direction from the ddq_nominal command.
+    """
+    u_qp_js = cp.Variable(NUM_ARM_JOINTS)
+
+    # --- CONSTRAINTS ---
+    # The safety and joint limit constraints are IDENTICAL to the original QP.
+    constraints_qp = []
+
+    # Pre-calculate all necessary kinematics once.
+    ddq_full_zeros = np.zeros(model.nv)
+    pin.forwardKinematics(model, data, q_full_curr, dq_full_curr, ddq_full_zeros)
+    pin.computeJointJacobians(model, data, q_full_curr)
+    pin.updateFramePlacements(model, data)
+
+    # --- NEW OBJECTIVE (Derived from ddq_nominal) ---
+    # 1. Get the End-Effector Jacobian
+    J_ee_full = pin.getFrameJacobian(model, data, EE_FRAME_ID, pin.ReferenceFrame.LOCAL_WORLD_ALIGNED)
+    J_ee_p_arm = J_ee_full[:3, :NUM_ARM_JOINTS]
+
+    # 2. Calculate the intended Cartesian acceleration from the nominal command
+    a_ee_nominal_dir = J_ee_p_arm @ ddq_nominal_arm_val
+
+    # 3. Define the objective: Maximize the resulting EE acceleration along the intended direction.
+    progress_objective = a_ee_nominal_dir.T @ J_ee_p_arm @ u_qp_js
+    objective = cp.Maximize(progress_objective)
+
+        # Iterate through each defined LINK and each obstacle
+    for link_info in active_links_list:
+        start_frame_id = link_info['start_frame_id']
+        end_frame_id = link_info['end_frame_id']
+        link_radius_val = link_info['radius']
+
+        # Get 3D positions of the link's start and end points
+        p1 = data.oMf[start_frame_id].translation
+        p2 = data.oMf[end_frame_id].translation
+
+        for obs_item in current_obstacles_list_sim:
+            # --- 1. FFind the closest points between the two capsule segments ---
+            c_robot, c_obs, t = get_closest_points_between_segments(
+                p1, p2, obs_item['pose_start'], obs_item['pose_end']
+            )
+            
+            p_rel = c_robot - c_obs
+            h_val = h_func(p_rel, link_radius_val, obs_item['radius'], d_margin)
+            if h_val < 0.07: # Only add constraints if h is small (indicating a risk of collision) [0.15m^2 * 3 = 0.0675]
+
+                # --- 2. Calculate kinematics for the closest point on the ROBOT ---
+                J_C, v_C, a_drift_C = get_point_kinematics(
+                    link_info['start_frame_id'], link_info['end_frame_id'], t, dq_full_curr
+                )
+
+                # --- 3. Calculate relative velocity and acceleration drift ---
+                # Assuming obstacle velocity is constant, so acceleration is zero
+                v_rel = v_C - obs_item['velocity']
+                a_drift_rel = a_drift_C # - a_obs_drift (which is 0)
+
+                # --- 4. Use the new HOCBF functions for capsules ---
+                Lf_h_val = Lf_h(p_rel, v_rel)
+                psi_val = psi_func(h_val, Lf_h_val, current_gamma_js_val)
+                Lf_psi_val = Lf_psi(v_rel, a_drift_rel, p_rel, Lf_h_val, current_gamma_js_val)
+                Lg_psi_val_arm = Lg_psi(J_C, p_rel)
+
+                constraints_qp.append(Lg_psi_val_arm @ u_qp_js >= -Lf_psi_val - current_beta_js_val * psi_val)
+
+    # Iterate through self-collision pairs
+    for link1, link2 in self_collision_link_pair:
+        link1_info = next((l for l in active_links_list if l['name'] == link1), None)
+        start_frame_id_1 = link1_info['start_frame_id']
+        end_frame_id_1 = link1_info['end_frame_id']
+        link_radius_val_1 = link1_info['radius']
+        p1_1 = data.oMf[start_frame_id_1].translation
+        p2_1 = data.oMf[end_frame_id_1].translation
+
+        link2_info = next((l for l in active_links_list if l['name'] == link2), None)
+        start_frame_id_2 = link2_info['start_frame_id']
+        end_frame_id_2 = link2_info['end_frame_id']
+        link_radius_val_2 = link2_info['radius']
+        p1_2 = data.oMf[start_frame_id_2].translation
+        p2_2 = data.oMf[end_frame_id_2].translation
+
+        c_link1, c_link2, t = get_closest_points_between_segments(p1_1, p2_1, p1_2, p2_2)
+        p_rel = c_link1 - c_link2
+        h_val = h_func(p_rel, link_radius_val_1, link_radius_val_2)
+        if h_val < 0.02:  # Only add constraints if h is small (indicating a risk of self-collision)
+            # Calculate kinematics for the closest point on the first link
+            J_C1, v_C1, a_drift_C1 = get_point_kinematics(
+                start_frame_id_1, end_frame_id_1, t, dq_full_curr
+            )
+            J_C2, v_C2, a_drift_C2 = get_point_kinematics(
+                start_frame_id_2, end_frame_id_2, t, dq_full_curr
+            )
+            # Calculate relative velocity and acceleration drift
+            v_rel = v_C1 - v_C2
+            a_drift_rel = a_drift_C1 - a_drift_C2
+            J_rel = J_C1 - J_C2
+
+            Lf_h_val = Lf_h(p_rel, v_rel)
+            psi_val = psi_func(h_val, Lf_h_val, current_gamma_js_val)
+            Lf_psi_val = Lf_psi(v_rel, a_drift_rel, p_rel, Lf_h_val, current_gamma_js_val)
+            Lg_psi_val_arm = Lg_psi(J_rel, p_rel)
+
+            constraints_qp.append(Lg_psi_val_arm @ u_qp_js >= -Lf_psi_val - current_beta_js_val * psi_val)
+
+    # Joint acceleration limits
+    constraints_qp.append(u_qp_js >= ddq_min_arm)
+    constraints_qp.append(u_qp_js <= ddq_max_arm)
+
+    # Joint velocity limits (forward integration based on current velocity and desired acceleration)
+    dq_current_arm_val = dq_full_curr[:NUM_ARM_JOINTS]
+    # dq_min <= dq_current + ddq * dt
+    constraints_qp.append(u_qp_js >= (dq_min_arm - dq_current_arm_val) / dt_val)
+    constraints_qp.append(u_qp_js <= (dq_max_arm - dq_current_arm_val) / dt_val)
+
+    # Ensure the resulting motion is not in the opposite direction of the intent.
+    constraints_qp.append(progress_objective >= 0)
+
+    problem = cp.Problem(objective, constraints_qp)
+    ddq_recovery_arm_val = None
+    qp_solved_successfully = False
+    try:
+        problem.solve(solver=cp.OSQP, warm_start=True, verbose=False)
+        if problem.status == cp.OPTIMAL or problem.status == cp.OPTIMAL_INACCURATE:
+            if u_qp_js.value is not None:
+                ddq_recovery_arm_val = u_qp_js.value
+                qp_solved_successfully = True
+    except Exception:
+        qp_solved_successfully = False
+
+    return np.array(ddq_recovery_arm_val).flatten() if qp_solved_successfully else None, qp_solved_successfully
+
+
 class CbfControllerNode(Node):
     def __init__(self):
         super().__init__('cbf_controller_node')
@@ -564,15 +777,10 @@ class CbfControllerNode(Node):
         scenario_path = self.get_parameter('scenario_config_file').get_parameter_value().string_value
         
         # Load parameters directly from the provided YAML file
-        if not scenario_path:
-            scenario_path = os.path.join(package_directory, "share/franka_example_controllers/config/scenario_0.yaml")
-            self.get_logger().warn(f"'scenario_config_file' parameter not set. Defaulting to {scenario_path}")
-        
-        if not os.path.exists(scenario_path):
+        if not scenario_path or not os.path.exists(scenario_path):
             self.get_logger().fatal("HOCBF Node requires 'scenario_config_file', but it was not provided or file does not exist. Shutting down.")
             self.destroy_node()
             return
-
             
         with open(scenario_path, 'r') as file:
             config = yaml.safe_load(file)
@@ -586,7 +794,7 @@ class CbfControllerNode(Node):
         self.initial_gamma_js = 2.0
         self.initial_beta_js = 3.0
         self.d_margin = float(hocbf_params.get('d_margin', 0.0))
-        # self.d_margin = max(0.002, self.d_margin)
+        self.d_margin = max(0.002, self.d_margin)
         self.output_basename = hocbf_params.get('output_data_basename', 'unnamed_scenario')
         self.initial_ee_pos = None
 
@@ -595,7 +803,6 @@ class CbfControllerNode(Node):
         self.goal_settle_time_s = float(hocbf_params.get('goal_settle_time_s', 2.0)) # Must be at goal for 2s
         self.max_sim_duration_s = float(hocbf_params.get('max_sim_duration_s', 60.0)) # Timeout after 1 minute
         self.max_sim_duration_s = 60.0
-        self.start_time_ns = self.get_clock().now().nanoseconds
         self.at_goal_timer = 0.0 # Time we have been within goal tolerance
         self.is_shutdown_initiated = False # Flag to prevent multiple shutdowns
         self.final_run_status = "NONE" # Default to TIMEOUT
@@ -689,26 +896,14 @@ class CbfControllerNode(Node):
         self.q_full_pin = np.zeros(model.nq)
         self.dq_full_pin = np.zeros(model.nv)
 
-        # --- Hierarchical Controller State ---
-        self.mpc_planned_trajectory = None  # To store the trajectory from MPC
-        self.mpc_trajectory_start_time = 0.0
-        self.pid_integral_error = np.zeros(NUM_ARM_JOINTS)
-        self.pid_previous_error = np.zeros(NUM_ARM_JOINTS)
+        # Control loop frequency (Hz) - needs to be fast enough for integration
+        self.control_frequency = 50 # Hz
+        self.dt = 1.0 / self.control_frequency # Time step for integration
 
+        self.target = [0.307, 0.0, 0.487] # Initial target position for the end-effector in Cartesian space
 
-        # --- Control Loop Frequencies ---
-        self.mpc_frequency = 10  # Hz
-        self.pid_frequency = 50  # Hz
-
-        self.mpc_dt = 1.0 / self.mpc_frequency
-        self.dt = 1.0 / self.pid_frequency
-
-        # --- Timers for Each Loop ---
-        # High-frequency loop for PID tracking and safety filter
-        self.pid_timer = self.create_timer(self.dt, self.pid_and_safety_loop)
-
-        # Low-frequency loop for MPC planning
-        self.mpc_timer = self.create_timer(self.mpc_dt, self.mpc_planning_loop)
+        # Timer to trigger the control loop
+        self.timer = self.create_timer(self.dt, self.control_loop)
 
         # Timer for publishing markers (can be slower than control loop)
         self.marker_publish_timer = self.create_timer(0.5, self.publish_markers) # Publish markers every 0.5 seconds
@@ -744,39 +939,10 @@ class CbfControllerNode(Node):
         self.q_full_pin[:self.num_arm_joints] = self.current_joint_positions
         self.dq_full_pin[:self.num_arm_joints] = self.current_joint_velocities
 
-    def mpc_planning_loop(self):
-        """
-        Runs the slow MPC to generate a future trajectory of joint states.
-        """
+
+    def control_loop(self):
         if not self.received_first_joint_state or self.is_shutdown_initiated:
             self.get_logger().info("Control loop skipped: No joint state received yet or shutdown initiated.")
-            return
-
-        q_arm_current = self.current_joint_positions
-        dq_arm_current = self.current_joint_velocities
-
-        # Solve the MPC to get a plan of future states (q and dq)
-        planned_q, planned_dq = nominal_controller_mpc(
-            q_arm_current,
-            dq_arm_current,
-            self.goal_ee_pos,
-            self.mpc_dt
-        )
-
-        # If the MPC solved successfully, store the trajectory
-        if planned_q is not None and planned_dq is not None:
-            self.mpc_planned_trajectory = {'q': planned_q, 'dq': planned_dq}
-            # Record the time the trajectory was generated
-            current_time_ns = self.get_clock().now().nanoseconds
-            self.mpc_trajectory_start_time = (current_time_ns - self.start_time_ns) / 1e9
-
-    def pid_and_safety_loop(self):
-        if not self.received_first_joint_state or self.is_shutdown_initiated:
-            return
-        
-        # If we don't have a plan from the MPC yet, do nothing
-        if self.mpc_planned_trajectory is None:
-            self.get_logger().info("Waiting for first MPC trajectory...", throttle_duration_sec=1)
             return
         
         for obs in self.current_obstacles_list_sim:
@@ -871,6 +1037,8 @@ class CbfControllerNode(Node):
 
         # Record current time
         current_time_ns = self.get_clock().now().nanoseconds
+        if not self.history_data_frames: # First time step
+            self.start_time_ns = current_time_ns
         current_time_s = (current_time_ns - self.start_time_ns) / 1e9
 
         # --- Check for termination conditions at the end of the loop ---
@@ -906,29 +1074,9 @@ class CbfControllerNode(Node):
             self.destroy_node()
             return
 
-        # --- HIERARCHICAL CONTROL LOGIC ---
-        # 1. Determine the current time relative to the MPC plan's start time
-        time_since_plan_start = current_time_s - self.mpc_trajectory_start_time
-
-        # 2. Find the correct setpoint from the MPC's trajectory
-        target_index = int(np.floor(time_since_plan_start / self.mpc_dt)) + 1
-        
-        # Ensure the index is within the bounds of the trajectory
-        num_steps_in_plan = self.mpc_planned_trajectory['q'].shape[1]
-        if target_index >= num_steps_in_plan:
-            target_index = num_steps_in_plan - 1
-
-        q_target = self.mpc_planned_trajectory['q'][:, target_index]
-        dq_target = self.mpc_planned_trajectory['dq'][:, target_index]
-        
-        # 3. Use the PID controller to get the nominal acceleration
-        ddq_nominal_arm_cmd = joint_space_pid_controller(
-            q_arm_current, dq_arm_current, q_target, dq_target
-        )
-        
         start_solve_time = timer.time()
 
-        # ddq_nominal_arm_cmd, self.target = nominal_controller_js(q_arm_current, dq_arm_current, self.goal_ee_pos, self.target)
+        ddq_nominal_arm_cmd, self.target = nominal_controller_js(q_arm_current, dq_arm_current, self.goal_ee_pos, self.target)
         # ddq_nominal_arm_cmd = nominal_controller_mpc(q_arm_current, dq_arm_current, self.goal_ee_pos, self.dt)
 
         
@@ -943,6 +1091,25 @@ class CbfControllerNode(Node):
         # Use nominal controller
         # qp_solved = True
         # ddq_safe_arm_cmd = ddq_nominal_arm_cmd
+
+        '''
+        if qp_solved:
+            ddq_nominal_clipped = np.clip(ddq_nominal_arm_cmd, ddq_min_arm, ddq_max_arm)
+            difference_norm = np.linalg.norm(ddq_nominal_clipped) - np.linalg.norm(ddq_safe_arm_cmd)
+            if difference_norm > ACCEL_DIF_THRESHOLD:
+                
+                ddq_recovery_cmd, recovery_solved = solve_recovery_qp_js(
+                    self.dt, self.q_full_pin, self.dq_full_pin, ddq_nominal_arm_cmd,
+                    self.current_gamma_js, self.current_beta_js, self.d_margin,
+                    self.current_obstacles_list_sim, active_links, self.get_logger()
+                )
+
+                if recovery_solved and np.linalg.norm(ddq_nominal_clipped) - np.linalg.norm(ddq_recovery_cmd) < difference_norm:
+                    self.get_logger().info(f"Recovery QP successful. Applying performance-oriented command: {np.linalg.norm(ddq_recovery_cmd)}")
+                    ddq_safe_arm_cmd = ddq_recovery_cmd
+                else:
+                    self.get_logger().warn(f"Recovery QP failed. Sticking to the original slow but safe command: {np.linalg.norm(ddq_safe_arm_cmd)}")
+        '''
         
         
         if not qp_solved:

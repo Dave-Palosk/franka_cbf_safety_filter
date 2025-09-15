@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <cbf_safety_filter/joint_position_example_controller.hpp>
+#include <cbf_safety_filter/joint_position_controller.hpp>
 #include <cbf_safety_filter/robot_utils.hpp>
 
 #include <cassert>
@@ -27,7 +27,7 @@
 namespace cbf_safety_filter {
 
 controller_interface::InterfaceConfiguration
-JointPositionExampleController::command_interface_configuration() const {
+JointPositionController::command_interface_configuration() const {
   controller_interface::InterfaceConfiguration config;
   config.type = controller_interface::interface_configuration_type::INDIVIDUAL;
   for (int i = 1; i <= num_joints; ++i) {
@@ -37,7 +37,7 @@ JointPositionExampleController::command_interface_configuration() const {
 }
 
 controller_interface::InterfaceConfiguration
-JointPositionExampleController::state_interface_configuration() const {
+JointPositionController::state_interface_configuration() const {
   controller_interface::InterfaceConfiguration config;
   config.type = controller_interface::interface_configuration_type::INDIVIDUAL;
   if (!is_gazebo_) {
@@ -54,7 +54,7 @@ JointPositionExampleController::state_interface_configuration() const {
 }
 
 // Implement the joint command callback
-void JointPositionExampleController::joint_command_callback(
+void JointPositionController::joint_command_callback(
     const std_msgs::msg::Float64MultiArray::SharedPtr msg) {
   // Lock the mutex to protect desired_joint_positions_ during write
   std::lock_guard<std::mutex> lock(desired_joint_positions_mutex_);
@@ -67,7 +67,7 @@ void JointPositionExampleController::joint_command_callback(
   }
 }
 
-controller_interface::return_type JointPositionExampleController::update(
+controller_interface::return_type JointPositionController::update(
     const rclcpp::Time& /*time*/,
     const rclcpp::Duration& /*period*/) {
 //  if (initialization_flag_) {
@@ -106,7 +106,7 @@ controller_interface::return_type JointPositionExampleController::update(
   return controller_interface::return_type::OK;
 }
 
-CallbackReturn JointPositionExampleController::on_init() {
+CallbackReturn JointPositionController::on_init() {
   try {
     auto_declare<bool>("gazebo", false);
     auto_declare<std::string>("robot_description", "");
@@ -117,7 +117,7 @@ CallbackReturn JointPositionExampleController::on_init() {
   return CallbackReturn::SUCCESS;
 }
 
-CallbackReturn JointPositionExampleController::on_configure(
+CallbackReturn JointPositionController::on_configure(
     const rclcpp_lifecycle::State& /*previous_state*/) {
   is_gazebo_ = get_node()->get_parameter("gazebo").as_bool();
 
@@ -137,13 +137,13 @@ CallbackReturn JointPositionExampleController::on_configure(
 
   // Initialize the subscriber here in on_configure
   // The topic name must match what your Python node publishes to.
-  // We'll use '/joint_position_example_controller/external_commands' to distinguish it.
+  // We'll use '/joint_position_controller/external_commands' to distinguish it.
   joint_command_subscriber_ = get_node()->create_subscription<std_msgs::msg::Float64MultiArray>(
-      "/joint_position_example_controller/external_commands",
+      "/joint_position_controller/external_commands",
       10, // QoS history depth
-      std::bind(&JointPositionExampleController::joint_command_callback, this, std::placeholders::_1));
+      std::bind(&JointPositionController::joint_command_callback, this, std::placeholders::_1));
 
-  RCLCPP_INFO(get_node()->get_logger(), "JointPositionExampleController configured. Subscribing to /joint_position_example_controller/external_commands");
+  RCLCPP_INFO(get_node()->get_logger(), "JointPositionController configured. Subscribing to /joint_position_controller/external_commands");
 
   // Optionally, initialize desired_joint_positions_ with current state when configured
   // This helps prevent a jump if the first command arrives after a delay.
@@ -153,7 +153,7 @@ CallbackReturn JointPositionExampleController::on_configure(
   return CallbackReturn::SUCCESS;
 }
 
-CallbackReturn JointPositionExampleController::on_activate(
+CallbackReturn JointPositionController::on_activate(
     const rclcpp_lifecycle::State& /*previous_state*/) {
   initialization_flag_ = true;
 
@@ -167,7 +167,7 @@ CallbackReturn JointPositionExampleController::on_activate(
     desired_joint_positions_.at(i) = initial_pos;
     smoothed_joint_positions_.at(i) = initial_pos;
   }
-  RCLCPP_INFO(get_node()->get_logger(), "JointPositionExampleController activated. Initializing desired_joint_positions_ to current state.");
+  RCLCPP_INFO(get_node()->get_logger(), "JointPositionController activated. Initializing desired_joint_positions_ to current state.");
 
   return CallbackReturn::SUCCESS;
 }
@@ -175,5 +175,5 @@ CallbackReturn JointPositionExampleController::on_activate(
 }  // namespace cbf_safety_filter
 #include "pluginlib/class_list_macros.hpp"
 // NOLINTNEXTLINE
-PLUGINLIB_EXPORT_CLASS(cbf_safety_filter::JointPositionExampleController,
+PLUGINLIB_EXPORT_CLASS(cbf_safety_filter::JointPositionController,
                        controller_interface::ControllerInterface)

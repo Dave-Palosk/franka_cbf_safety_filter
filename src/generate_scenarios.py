@@ -8,13 +8,13 @@ import pinocchio as pin
 import shutil
 
 # --- Configuration ---
-N_OBSTACLE_VARIATIONS = 20
+N_OBSTACLE_VARIATIONS = 1000
 N_PARAMETERS_VARIATIONS = 1
 NUM_SCENARIOS = N_OBSTACLE_VARIATIONS * N_PARAMETERS_VARIATIONS * N_PARAMETERS_VARIATIONS # Total number of scenarios to generate
 
 OUTPUT_DIR = "config/generated_scenarios"
 
-RELEVANCE_DISTANCE_THRESHOLD = 0.3  # meters
+RELEVANCE_DISTANCE_THRESHOLD = 0.2  # meters
 MAX_TRIES_PER_OBSTACLE = 200
 
 # --- Pinocchio Model Setup for Collision Checking ---
@@ -36,6 +36,7 @@ Q_INITIAL[:7] = np.array([0.0, -np.pi/4, 0.0, -3*np.pi/4, 0.0, np.pi/2, np.pi/4]
 
 # Define the robot's control links (must match HOCBF_v1.py)
 LINKS_DEF = [
+    {'name': 'link1', 'start_frame_name': 'fr3_link0', 'end_frame_name': 'fr3_link1', 'radius': 0.08},
     {'name': 'link2', 'start_frame_name': 'fr3_link2', 'end_frame_name': 'fr3_link3', 'radius': 0.06},
     {'name': 'joint4',   'start_frame_name': 'fr3_link4', 'end_frame_name': 'fr3_link5_offset1', 'radius': 0.065},
     {'name': 'forearm1',   'start_frame_name': 'fr3_link5_offset2', 'end_frame_name': 'fr3_link5_offset3', 'radius': 0.035},
@@ -68,7 +69,7 @@ X_RANGE = [-0.5, 0.7]
 Y_RANGE = [-0.7, 0.7]
 Z_RANGE = [0.0, 0.8]
 RADIUS_RANGE = [0.05, 0.15]
-NUM_OBSTACLES_RANGE = [1, 5] # Generate scenarios with 1 to 5 obstacles
+NUM_OBSTACLES_RANGE = [2, 5] # Generate scenarios with 1 to 5 obstacles
 MAX_CAPSULE_LENGTH = 0.4  # Maximum length for capsule obstacles
 
 GOAL_X_RANGE = [-0.5, 0.7]
@@ -123,7 +124,7 @@ def check_capsule_capsule_collision(p1_A, p2_A, r_A, p1_B, p2_B, r_B):
     """Checks if two capsules collide."""
     c_A, c_B = get_closest_points_between_segments(p1_A, p2_A, p1_B, p2_B)
     dist_sq = np.sum((c_A - c_B)**2)
-    min_safe_dist_sq = (r_A + r_B)**2
+    min_safe_dist_sq = (r_A + r_B)**2 + 0.02
     return dist_sq < min_safe_dist_sq
 
 def get_link_endpoint_positions(q):
@@ -145,13 +146,11 @@ def main():
     
     print(f"Generating {NUM_SCENARIOS} scenarios in '{full_output_dir}'...")
     
-    # gamma_list = np.linspace(GAMMA_JS_RANGE[0], GAMMA_JS_RANGE[1], N_PARAMETERS_VARIATIONS)
     gamma_list = GAMMA_JS_RANGE
-    # beta_list = np.linspace(BETA_JS_RANGE[0], BETA_JS_RANGE[1], N_PARAMETERS_VARIATIONS)
     beta_list = BETA_JS_RANGE
     if N_PARAMETERS_VARIATIONS == 1:
-        gamma_list = [10.0]
-        beta_list = [15.0]
+        gamma_list = [2.0]
+        beta_list = [3.0]
 
         initial_endpoint_positions = get_link_endpoint_positions(Q_INITIAL)
     initial_ee_pos = initial_endpoint_positions[EE_FRAME_NAME]
@@ -163,7 +162,7 @@ def main():
                              random.uniform(GOAL_Y_RANGE[0], GOAL_Y_RANGE[1]),
                              random.uniform(GOAL_Z_RANGE[0], GOAL_Z_RANGE[1])])
         
-        # --- MODIFIED: Generate "Relevant" Obstacles ---
+        # --- Generate "Relevant" Obstacles ---
         num_obstacles = random.randint(NUM_OBSTACLES_RANGE[0], NUM_OBSTACLES_RANGE[1])
         obstacles = []
         generation_successful = True
@@ -185,6 +184,9 @@ def main():
                     if check_capsule_capsule_collision(p1_robot, p2_robot, link_def['radius'], p1, p2, radius):
                         in_initial_collision = True
                         break
+                # Check for initial distance between goal position and end effector
+                if check_capsule_capsule_collision(initial_ee_pos, initial_ee_pos, 0.03, goal_pos, goal_pos, 0.1):
+                    in_initial_collision = True
                 if in_initial_collision: continue # Try again
 
                 # 3. Check for relevance
@@ -200,7 +202,7 @@ def main():
 
                 # Check proximity to trajectory line (EE start to goal)
                 c_traj, c_obs = get_closest_points_between_segments(initial_ee_pos, goal_pos, p1, p2)
-                if np.linalg.norm(c_traj - c_obs) < (radius + RELEVANCE_DISTANCE_THRESHOLD):
+                if np.linalg.norm(c_traj - c_obs) < (radius):
                     is_relevant_and_valid = True; break
 
             if is_relevant_and_valid:
@@ -225,11 +227,6 @@ def main():
                 is_valid = False; break
         if not is_valid: continue
 
-        base_link = LINKS_DEF[0]
-        p1_base, p2_base = initial_endpoint_positions[base_link['start_frame_name']], initial_endpoint_positions[base_link['end_frame_name']]
-        if check_capsule_capsule_collision(p1_base, p2_base, base_link['radius'], goal_pos, goal_pos, 0.02):
-            continue
-
         # --- Assemble and Write Scenario File ---
         if generated_count >= NUM_SCENARIOS: break
         
@@ -249,7 +246,7 @@ def main():
                             'output_data_basename': scenario_name,
                             'goal_maintolerance_m': 0.02,
                             'goal_settle_time_s': 1.5,
-                            'max_sim_duration_s': 60.0
+                            'max_sim_duration_s': 30.0
                         }
                     },
                     'obstacles': obstacles
