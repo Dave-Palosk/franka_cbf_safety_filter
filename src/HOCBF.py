@@ -47,11 +47,12 @@ except IndexError:
 
 # --- Define Control links on the Robot ---
 links_def = [
+    # {'name': 'link2_base', 'start_frame_name': 'fr3_link2_offset1', 'end_frame_name': 'fr3_link2_offset2', 'radius': 0.055}, # Uncomment for more accurate collision checking
     {'name': 'link2', 'start_frame_name': 'fr3_link2', 'end_frame_name': 'fr3_link3', 'radius': 0.06},
     {'name': 'joint4',   'start_frame_name': 'fr3_link4', 'end_frame_name': 'fr3_link5_offset1', 'radius': 0.065},
     {'name': 'forearm1',   'start_frame_name': 'fr3_link5_offset2', 'end_frame_name': 'fr3_link5_offset3', 'radius': 0.035},
     {'name': 'forearm2',   'start_frame_name': 'fr3_link5_offset3', 'end_frame_name': 'fr3_link5', 'radius': 0.05},
-    {'name': 'wrist',     'start_frame_name': 'fr3_link7', 'end_frame_name': 'fr3_hand',  'radius': 0.055},
+    {'name': 'wrist',     'start_frame_name': 'fr3_link7', 'end_frame_name': 'fr3_hand',  'radius': 0.055}, # Change fr3_linkt to fr3_link7_offset1 for more accurate collision checking
     {'name': 'hand',     'start_frame_name': 'fr3_hand_offset1', 'end_frame_name': 'fr3_hand_offset2',  'radius': 0.03},
     {'name': 'end_effector',      'start_frame_name': EE_FRAME_NAME,  'end_frame_name': EE_FRAME_NAME, 'radius': 0.03},
 ]
@@ -316,10 +317,10 @@ def nominal_controller_mpc(q_arm_curr, dq_arm_curr, target_ee_pos_cartesian, dt)
     """
     # --- MPC Parameters (Tuned for stability and speed) ---
     N = 7          # Prediction horizon (longer horizon for smoother plans)
-    Q_pos = 10.0  # Weight for end-effector position error (reduced for less aggression)
+    Q_pos = 100.0  # Weight for end-effector position error (reduced for less aggression)
     R_accel = 0.001   # Weight for control effort (encourages smaller accelerations)
     W_stop = 0.01   # Weight for stopping cost (dampens motion near goal)
-    W_jerk = 0.1    # Weight for jerk cost (encourages smooth accelerations)
+    W_jerk = 0.01    # Weight for jerk cost (encourages smooth accelerations)
 
     # --- Setup the Optimization Problem with CasADi ---
     opti = ca.Opti()
@@ -333,7 +334,7 @@ def nominal_controller_mpc(q_arm_curr, dq_arm_curr, target_ee_pos_cartesian, dt)
 
     # --- Cost Function ---
     cost = 0
-    # cost += R_accel * ca.sumsqr(ddq) # Penalize large control inputs
+    cost += R_accel * ca.sumsqr(ddq) # Penalize large control inputs
 
     # --- Constraints ---
     # Initial state constraint
@@ -366,7 +367,7 @@ def nominal_controller_mpc(q_arm_curr, dq_arm_curr, target_ee_pos_cartesian, dt)
         # CRITICAL: Enforce all joint limits on the predicted trajectory
         opti.subject_to(opti.bounded(q_min_arm, q[:, k + 1], q_max_arm))
         opti.subject_to(opti.bounded(dq_min_arm, dq[:, k + 1], dq_max_arm))
-        opti.subject_to(opti.bounded(ddq_min_arm, ddq[:, k], ddq_max_arm)) # Re-enable this!
+        # opti.subject_to(opti.bounded(ddq_min_arm, ddq[:, k], ddq_max_arm))
 
         # Stop Cost
         time_to_stop = (N - 1 - k) * dt
@@ -564,15 +565,10 @@ class CbfControllerNode(Node):
         scenario_path = self.get_parameter('scenario_config_file').get_parameter_value().string_value
         
         # Load parameters directly from the provided YAML file
-        if not scenario_path:
-            scenario_path = os.path.join(package_directory, "share/franka_example_controllers/config/scenario_0.yaml")
-            self.get_logger().warn(f"'scenario_config_file' parameter not set. Defaulting to {scenario_path}")
-        
-        if not os.path.exists(scenario_path):
+        if not scenario_path or not os.path.exists(scenario_path):
             self.get_logger().fatal("HOCBF Node requires 'scenario_config_file', but it was not provided or file does not exist. Shutting down.")
             self.destroy_node()
             return
-
             
         with open(scenario_path, 'r') as file:
             config = yaml.safe_load(file)
@@ -644,6 +640,18 @@ class CbfControllerNode(Node):
             10
         )
 
+        self.marker_publisher_3 = self.create_publisher(
+            Marker,
+            '/visualization_marker_3',
+            10
+        )
+
+        self.marker_publisher_4 = self.create_publisher(
+            Marker,
+            '/visualization_marker_4',
+            10
+        )
+
         self.bot_marker_publisher_1 = self.create_publisher(
             Marker,
             '/bot_marker_1',
@@ -665,6 +673,12 @@ class CbfControllerNode(Node):
         self.bot_marker_publisher_4 = self.create_publisher(
             Marker,
             '/bot_marker_4',
+            10
+        )
+
+        self.bot_marker_publisher_5 = self.create_publisher(
+            Marker,
+            '/bot_marker_5',
             10
         )
 
@@ -692,6 +706,7 @@ class CbfControllerNode(Node):
         # --- Hierarchical Controller State ---
         self.mpc_planned_trajectory = None  # To store the trajectory from MPC
         self.mpc_trajectory_start_time = 0.0
+        self.mpc_solve_time = 0.0
         self.pid_integral_error = np.zeros(NUM_ARM_JOINTS)
         self.pid_previous_error = np.zeros(NUM_ARM_JOINTS)
 
@@ -755,6 +770,8 @@ class CbfControllerNode(Node):
         q_arm_current = self.current_joint_positions
         dq_arm_current = self.current_joint_velocities
 
+        start_mpc_solve_time = timer.time()
+
         # Solve the MPC to get a plan of future states (q and dq)
         planned_q, planned_dq = nominal_controller_mpc(
             q_arm_current,
@@ -762,6 +779,8 @@ class CbfControllerNode(Node):
             self.goal_ee_pos,
             self.mpc_dt
         )
+
+        self.mpc_solve_time = timer.time() - start_mpc_solve_time
 
         # If the MPC solved successfully, store the trajectory
         if planned_q is not None and planned_dq is not None:
@@ -787,6 +806,7 @@ class CbfControllerNode(Node):
 
         min_h_current = float('inf')
         min_psi_current = float('inf')
+        min_dist_current = float('inf')
 
         # --- Track maximum required gamma for dynamic adjustment ---
         max_gamma_required_for_h = -float('inf') # Initialize with negative infinity
@@ -817,6 +837,11 @@ class CbfControllerNode(Node):
                 J_C, v_C, a_drift_C = get_point_kinematics(
                     link_info['start_frame_id'], link_info['end_frame_id'], t, self.dq_full_pin
                 )
+
+                # --- Calculate and track minimum surface distance ---
+                dist_centers = np.linalg.norm(c_robot - c_obs)
+                dist_surfaces = dist_centers - (link_radius_val + obs_item['radius'])
+                min_dist_current = min(min_dist_current, dist_surfaces)
 
                 # --- 2. Calculate h, Lf_h, and update min_h ---
                 p_rel = c_robot - c_obs
@@ -959,7 +984,9 @@ class CbfControllerNode(Node):
         step_data = {
             'time': current_time_s,
             'solve_time': timer.time() - start_solve_time,
+            'mpc_solve_time': self.mpc_solve_time,
             'min_h': min_h_current,
+            'min_dist': min_dist_current,
             'min_psi': min_psi_current,
             'qp_infeasible': not qp_solved,
             'joint_q': q_arm_current.tolist(),      # Store as list for compatibility
@@ -1105,16 +1132,10 @@ class CbfControllerNode(Node):
                 radius=obs['radius'],
                 r=1.0, g=0.5, b=0.0, a=0.7
             )
-            if i < 2:
-                self.marker_publisher_1.publish(marker_obs_cap1)
-                if not np.array_equal(obs['pose_start'], obs['pose_end']):
-                    self.marker_publisher_1.publish(marker_obs_cap2)
-                    self.marker_publisher_1.publish(marker_obs_cyl)
-            else:
-                self.marker_publisher_2.publish(marker_obs_cap1)
-                if not np.array_equal(obs['pose_start'], obs['pose_end']):
-                    self.marker_publisher_2.publish(marker_obs_cap2)
-                    self.marker_publisher_2.publish(marker_obs_cyl)
+            self.marker_publisher_2.publish(marker_obs_cap1)
+            if not np.array_equal(obs['pose_start'], obs['pose_end']):
+                self.marker_publisher_3.publish(marker_obs_cap2)
+                self.marker_publisher_4.publish(marker_obs_cyl)
 
         # Publish goal position marker
         # Marker ID for goal is after all obstacles
@@ -1129,6 +1150,7 @@ class CbfControllerNode(Node):
         pin.forwardKinematics(model, data, self.q_full_pin, self.dq_full_pin, np.zeros(model.nv))
         pin.updateFramePlacements(model, data)
 
+        bot_number_marker = 0
         for i, link_info in enumerate(active_links):
             p1 = data.oMf[link_info['start_frame_id']].translation
             p2 = data.oMf[link_info['end_frame_id']].translation
@@ -1154,16 +1176,76 @@ class CbfControllerNode(Node):
             )
 
             # Distribute markers among publishers (they don't plot well more than 5 markers at once)
-            if i % 2 == 0:
+            if bot_number_marker < 5:
                 self.bot_marker_publisher_1.publish(marker_cap_1)
+                bot_number_marker += 1
                 if p1.tolist() != p2.tolist():
-                    self.bot_marker_publisher_1.publish(marker_cap_2)
-                    self.bot_marker_publisher_3.publish(marker_link)
-            else:
+                    if bot_number_marker < 5:
+                        self.bot_marker_publisher_1.publish(marker_cap_2)
+                        bot_number_marker += 1
+                    else:
+                        self.bot_marker_publisher_2.publish(marker_cap_2)
+                        bot_number_marker += 1
+                    if bot_number_marker < 5:
+                        self.bot_marker_publisher_1.publish(marker_link)
+                        bot_number_marker += 1
+                    else:
+                        self.bot_marker_publisher_2.publish(marker_link)
+                        bot_number_marker += 1
+            elif bot_number_marker < 10:
                 self.bot_marker_publisher_2.publish(marker_cap_1)
+                bot_number_marker += 1
                 if p1.tolist() != p2.tolist():
-                    self.bot_marker_publisher_2.publish(marker_cap_2)
-                    self.bot_marker_publisher_4.publish(marker_link)
+                    if bot_number_marker < 10:
+                        self.bot_marker_publisher_2.publish(marker_cap_2)
+                        bot_number_marker += 1
+                    else:
+                        self.bot_marker_publisher_3.publish(marker_cap_2)
+                        bot_number_marker += 1
+                    if bot_number_marker < 10:
+                        self.bot_marker_publisher_2.publish(marker_link)
+                        bot_number_marker += 1
+                    else:
+                        self.bot_marker_publisher_3.publish(marker_link)
+                        bot_number_marker += 1
+            elif bot_number_marker < 15:
+                self.bot_marker_publisher_3.publish(marker_cap_1)
+                bot_number_marker += 1
+                if p1.tolist() != p2.tolist():
+                    if bot_number_marker < 15:
+                        self.bot_marker_publisher_3.publish(marker_cap_2)
+                        bot_number_marker += 1
+                    else:
+                        self.bot_marker_publisher_4.publish(marker_cap_2)
+                        bot_number_marker += 1
+                    if bot_number_marker < 15:
+                        self.bot_marker_publisher_3.publish(marker_link)
+                        bot_number_marker += 1
+                    else:
+                        self.bot_marker_publisher_4.publish(marker_link)
+                        bot_number_marker += 1
+            elif bot_number_marker < 20:
+                self.bot_marker_publisher_4.publish(marker_cap_1)
+                bot_number_marker += 1
+                if p1.tolist() != p2.tolist():
+                    if bot_number_marker < 20:
+                        self.bot_marker_publisher_4.publish(marker_cap_2)
+                        bot_number_marker += 1
+                    else:
+                        self.bot_marker_publisher_5.publish(marker_cap_2)
+                        bot_number_marker += 1
+                    if bot_number_marker < 20:
+                        self.bot_marker_publisher_4.publish(marker_link)
+                        bot_number_marker += 1
+                    else:
+                        self.bot_marker_publisher_5.publish(marker_link)
+                        bot_number_marker += 1
+            else:
+                self.bot_marker_publisher_5.publish(marker_cap_1)
+                if p1.tolist() != p2.tolist():
+                    self.bot_marker_publisher_5.publish(marker_cap_2)
+                    self.bot_marker_publisher_5.publish(marker_link)
+
 
     def save_and_plot_results(self):
         if not self.history_data_frames:
