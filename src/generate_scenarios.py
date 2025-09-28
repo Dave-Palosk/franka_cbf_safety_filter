@@ -8,7 +8,7 @@ import pinocchio as pin
 import shutil
 
 # --- Configuration ---
-N_OBSTACLE_VARIATIONS = 1000
+N_OBSTACLE_VARIATIONS = 100
 N_PARAMETERS_VARIATIONS = 1
 NUM_SCENARIOS = N_OBSTACLE_VARIATIONS * N_PARAMETERS_VARIATIONS * N_PARAMETERS_VARIATIONS # Total number of scenarios to generate
 

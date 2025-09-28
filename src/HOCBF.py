@@ -682,6 +682,13 @@ class CbfControllerNode(Node):
             10
         )
 
+        # --- Publisher for the EE Trajectory Marker ---
+        self.trajectory_marker_publisher = self.create_publisher(
+            Marker,
+            '/ee_trajectory_marker',
+            10
+        )
+
         self.robot_joint_names = [
             'fr3_joint1', 'fr3_joint2', 'fr3_joint3', 'fr3_joint4',
             'fr3_joint5', 'fr3_joint6', 'fr3_joint7'
@@ -690,6 +697,9 @@ class CbfControllerNode(Node):
 
         # History for plotting ALL h and psi values (overall min)
         self.history_data_frames = []
+
+        # --- List to store the history of EE positions ---
+        self.ee_position_history = []
 
         # --- Dynamic CBF parameters (initially global values) ---
         self.current_gamma_js = self.initial_gamma_js
@@ -816,6 +826,30 @@ class CbfControllerNode(Node):
         pin.forwardKinematics(model, data, self.q_full_pin, self.dq_full_pin, np.zeros(model.nv))
         pin.updateFramePlacements(model, data)
 
+        # --- Record EE position for trajectory ---
+        current_ee_pos = data.oMf[EE_FRAME_ID].translation
+        self.ee_position_history.append(Point(x=current_ee_pos[0], y=current_ee_pos[1], z=current_ee_pos[2]))
+
+
+        # --- Calculate State-Dependent Kinematic Acceleration Bounds ---
+        # These are the true acceleration limits for the next time step, considering
+        # velocity and position constraints. This is the same logic used in the QP.
+        
+        # 1. Bounds from Velocity Limits
+        ddq_max_from_vel = (dq_max_arm - dq_arm_current) / self.dt
+        ddq_min_from_vel = (dq_min_arm - dq_arm_current) / self.dt
+
+        # 2. Bounds from Position Limits
+        ddq_max_from_pos = 2 * (q_max_arm - q_arm_current - dq_arm_current * self.dt) / (self.dt**2)
+        ddq_min_from_pos = 2 * (q_min_arm - q_arm_current - dq_arm_current * self.dt) / (self.dt**2)
+
+        # 3. Combine with actuator limits to find the most restrictive bounds
+        # For the max bound, we take the minimum of all maximums.
+        # For the min bound, we take the maximum of all minimums.
+        ddq_max_kinematic = np.minimum(ddq_max_arm, np.minimum(ddq_max_from_vel, ddq_max_from_pos))
+        ddq_min_kinematic = np.maximum(ddq_min_arm, np.maximum(ddq_min_from_vel, ddq_min_from_pos))
+        
+
         # --- LOOP for h, psi, and dynamic gamma/beta calculation for LINKS ---
         current_h_psi_values = {}
         for link_info in active_links:
@@ -867,7 +901,7 @@ class CbfControllerNode(Node):
                 Lf_psi_val = Lf_psi(v_rel, a_drift_rel, p_rel, Lf_h_val, self.current_gamma_js)
                 Lg_psi_val = Lg_psi(J_C, p_rel).flatten()
                 
-                sup_Lg_psi_u = np.sum(np.where(Lg_psi_val >= 0, Lg_psi_val * ddq_max_arm, Lg_psi_val * ddq_min_arm))
+                sup_Lg_psi_u = np.sum(np.where(Lg_psi_val >= 0, Lg_psi_val * ddq_max_kinematic, Lg_psi_val * ddq_min_kinematic))
                 S_sup_val = Lf_psi_val + sup_Lg_psi_u
 
                 if psi_val > EPSILON_DENOMINATOR:
@@ -1246,6 +1280,31 @@ class CbfControllerNode(Node):
                     self.bot_marker_publisher_5.publish(marker_cap_2)
                     self.bot_marker_publisher_5.publish(marker_link)
 
+        # --- Publish the End-Effector Trajectory Marker ---
+        if self.ee_position_history:
+            traj_marker = Marker()
+            traj_marker.header.frame_id = "world"
+            traj_marker.header.stamp = self.get_clock().now().to_msg()
+            traj_marker.ns = "ee_trajectory"
+            traj_marker.id = 0
+            traj_marker.type = Marker.LINE_STRIP
+            traj_marker.action = Marker.ADD
+
+            # Set the points for the line strip
+            traj_marker.points = self.ee_position_history
+
+            # Line strip settings
+            traj_marker.scale.x = 0.01  # Line width
+            traj_marker.color.r = 0.0
+            traj_marker.color.g = 1.0
+            traj_marker.color.b = 0.8  # Cyan
+            traj_marker.color.a = 1.0
+            
+            # This marker should persist and not auto-delete
+            traj_marker.lifetime = rclpy.duration.Duration(seconds=0).to_msg() 
+
+            self.trajectory_marker_publisher.publish(traj_marker)
+
 
     def save_and_plot_results(self):
         if not self.history_data_frames:
@@ -1324,7 +1383,7 @@ class CbfControllerNode(Node):
         ax_overview = fig_overview.add_subplot(111) 
         
         ax_overview.plot(time_history, h_min_history, label='Min $h_{kj}$')
-        ax_overview.plot(time_history, psi_min_history, label='Min $\psi_{kj}$')
+        # ax_overview.plot(time_history, psi_min_history, label='Min $\psi_{kj}$')
         
         infeasible_times = [time_history[i] for i, is_infeasible in enumerate(qp_infeasible_history) if is_infeasible]
         for t_inf in infeasible_times:
@@ -1388,6 +1447,41 @@ class CbfControllerNode(Node):
         # Save fig_joint_data
         fig_joint_data.savefig(f"{base_filename}_joint_states.png")
 
+        fig_accel, axs_accel = plt.subplots(num_joints, 1, figsize=(10, 14), sharex=True)
+        fig_accel.suptitle('Joint Accelerations Over Time', fontsize=16)
+
+        for i, joint_name in enumerate(self.robot_joint_names):
+            # Plot applied (safe) acceleration
+            axs_accel[i].plot(time_history, joint_ddq_history_extracted[joint_name], label=f'{joint_name} (Applied)')
+            
+            # Plot nominal (desired) acceleration
+            axs_accel[i].plot(time_history, joint_ddq_nominal_history_extracted[joint_name], label='Nominal', alpha=0.7)
+            
+            # Plot acceleration limits
+            axs_accel[i].axhline(ddq_max_arm[i], color='r', linestyle=':', alpha=0.5)
+            axs_accel[i].axhline(ddq_min_arm[i], color='r', linestyle=':', alpha=0.5)
+            
+            # Mark QP infeasible points
+            for t_inf in infeasible_times:
+                axs_accel[i].axvline(t_inf, color='magenta', linestyle=':', lw=0.8, alpha=0.2)
+                
+            axs_accel[i].set_ylabel('Accel (rad/s²)')
+            axs_accel[i].legend(loc='upper right')
+            axs_accel[i].grid(True)
+            axs_accel[i].set_ylim(ddq_min_arm[i] * 1.5, ddq_max_arm[i] * 1.5)
+
+        # Add a single legend entry for the infeasibility markers
+        if infeasible_times:
+            axs_accel[0].axvline(infeasible_times[0], color='magenta', linestyle=':', lw=0.8, alpha=0.2, label='QP Infeasible')
+            # Redraw the legend to include the new entry
+            axs_accel[0].legend(loc='upper right')
+
+
+        axs_accel[-1].set_xlabel('Time (s)')
+        fig_accel.tight_layout(rect=[0, 0.03, 1, 0.96]) # Adjust layout
+        
+        # Save the new figure to its own file
+        fig_accel.savefig(f"{base_filename}_joint_accelerations.png")
 
         # --- Plot all individual h_kj values ---
         fig_all_h, ax_all_h = plt.subplots(figsize=(12, 8))

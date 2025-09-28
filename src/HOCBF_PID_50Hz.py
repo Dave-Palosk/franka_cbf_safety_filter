@@ -894,6 +894,13 @@ class CbfControllerNode(Node):
             10
         )
 
+        # --- Publisher for the EE Trajectory Marker ---
+        self.trajectory_marker_publisher = self.create_publisher(
+            Marker,
+            '/ee_trajectory_marker',
+            10
+        )
+
         self.robot_joint_names = [
             'fr3_joint1', 'fr3_joint2', 'fr3_joint3', 'fr3_joint4',
             'fr3_joint5', 'fr3_joint6', 'fr3_joint7'
@@ -902,6 +909,9 @@ class CbfControllerNode(Node):
 
         # History for plotting ALL h and psi values (overall min)
         self.history_data_frames = []
+
+        # --- List to store the history of EE positions ---
+        self.ee_position_history = []
 
         # --- Dynamic CBF parameters (initially global values) ---
         self.current_gamma_js = self.initial_gamma_js
@@ -982,6 +992,11 @@ class CbfControllerNode(Node):
         # Ensure Pinocchio data is fresh before calculating h/psi
         pin.forwardKinematics(model, data, self.q_full_pin, self.dq_full_pin, np.zeros(model.nv))
         pin.updateFramePlacements(model, data)
+
+        # --- Record EE position for trajectory ---
+        current_ee_pos = data.oMf[EE_FRAME_ID].translation
+        self.ee_position_history.append(Point(x=current_ee_pos[0], y=current_ee_pos[1], z=current_ee_pos[2]))
+
 
         # --- LOOP for h, psi, and dynamic gamma/beta calculation for LINKS ---
         current_h_psi_values = {}
@@ -1412,6 +1427,31 @@ class CbfControllerNode(Node):
                 if p1.tolist() != p2.tolist():
                     self.bot_marker_publisher_5.publish(marker_cap_2)
                     self.bot_marker_publisher_5.publish(marker_link)
+            
+        # --- Publish the End-Effector Trajectory Marker ---
+        if self.ee_position_history:
+            traj_marker = Marker()
+            traj_marker.header.frame_id = "world"
+            traj_marker.header.stamp = self.get_clock().now().to_msg()
+            traj_marker.ns = "ee_trajectory"
+            traj_marker.id = 0
+            traj_marker.type = Marker.LINE_STRIP
+            traj_marker.action = Marker.ADD
+
+            # Set the points for the line strip
+            traj_marker.points = self.ee_position_history
+
+            # Line strip settings
+            traj_marker.scale.x = 0.01  # Line width
+            traj_marker.color.r = 0.0
+            traj_marker.color.g = 1.0
+            traj_marker.color.b = 0.8  # Cyan
+            traj_marker.color.a = 1.0
+            
+            # This marker should persist and not auto-delete
+            traj_marker.lifetime = rclpy.duration.Duration(seconds=0).to_msg() 
+
+            self.trajectory_marker_publisher.publish(traj_marker)
 
 
     def save_and_plot_results(self):

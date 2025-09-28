@@ -1,0 +1,104 @@
+hocbf_controller:
+  ros__parameters:
+    goal_ee_pos:
+    - 0.6774
+    - -0.1989
+    - 0.5812
+    gamma_js: 10.0
+    beta_js: 15.0
+    d_margin: 0.0
+    output_data_basename: scenario_0008
+    goal_maintolerance_m: 0.02
+    goal_settle_time_s: 1.5
+    max_sim_duration_s: 60.0
+obstacles:
+- name: obstacle_0
+  pose_start:
+    position:
+    - -0.1311
+    - 0.2833
+    - 0.1281
+  pose_end:
+    position:
+    - -0.1311
+    - 0.2833
+    - 0.1281
+  size:
+    radius: 0.1194
+  velocity:
+    linear:
+    - 0.0
+    - 0.0
+    - 0.0
+- name: obstacle_1
+  pose_start:
+    position:
+    - 0.4402
+    - 0.2537
+    - 0.723
+  pose_end:
+    position:
+    - 0.1257
+    - 0.4119
+    - 0.6651
+  size:
+    radius: 0.0783
+  velocity:
+    linear:
+    - 0.0
+    - 0.0
+    - 0.0
+- name: obstacle_2
+  pose_start:
+    position:
+    - 0.2916
+    - 0.2707
+    - 0.3061
+  pose_end:
+    position:
+    - 0.2916
+    - 0.2707
+    - 0.3061
+  size:
+    radius: 0.1111
+  velocity:
+    linear:
+    - 0.0
+    - 0.0
+    - 0.0
+- name: obstacle_3
+  pose_start:
+    position:
+    - -0.1747
+    - -0.3496
+    - 0.1699
+  pose_end:
+    position:
+    - -0.2213
+    - -0.2255
+    - 0.2105
+  size:
+    radius: 0.1415
+  velocity:
+    linear:
+    - 0.0
+    - 0.0
+    - 0.0
+- name: obstacle_4
+  pose_start:
+    position:
+    - 0.0439
+    - -0.2195
+    - 0.165
+  pose_end:
+    position:
+    - 0.0439
+    - -0.2195
+    - 0.165
+  size:
+    radius: 0.0715
+  velocity:
+    linear:
+    - 0.0
+    - 0.0
+    - 0.0
