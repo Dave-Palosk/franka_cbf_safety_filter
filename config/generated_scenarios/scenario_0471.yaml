@@ -1,0 +1,50 @@
+hocbf_controller:
+  ros__parameters:
+    goal_ee_pos:
+    - -0.4636
+    - 0.4988
+    - 0.3441
+    gamma_js: 10.0
+    beta_js: 15.0
+    d_margin: 0.0
+    output_data_basename: scenario_0471
+    goal_maintolerance_m: 0.02
+    goal_settle_time_s: 1.5
+    max_sim_duration_s: 60.0
+obstacles:
+- name: obstacle_0
+  pose_start:
+    position:
+    - -0.2233
+    - -0.1748
+    - 0.1205
+  pose_end:
+    position:
+    - -0.3983
+    - -0.4452
+    - 0.0
+  size:
+    radius: 0.1228
+  velocity:
+    linear:
+    - 0.0
+    - 0.0
+    - 0.0
+- name: obstacle_1
+  pose_start:
+    position:
+    - -0.1887
+    - -0.1555
+    - 0.2876
+  pose_end:
+    position:
+    - -0.2683
+    - -0.2238
+    - 0.2611
+  size:
+    radius: 0.0604
+  velocity:
+    linear:
+    - 0.0
+    - 0.0
+    - 0.0

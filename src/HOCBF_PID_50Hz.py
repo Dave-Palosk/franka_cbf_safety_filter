@@ -47,11 +47,12 @@ except IndexError:
 
 # --- Define Control links on the Robot ---
 links_def = [
+    # {'name': 'link2_base', 'start_frame_name': 'fr3_link2_offset1', 'end_frame_name': 'fr3_link2_offset2', 'radius': 0.055}, # Uncomment for more accurate collision checking
     {'name': 'link2', 'start_frame_name': 'fr3_link2', 'end_frame_name': 'fr3_link3', 'radius': 0.06},
     {'name': 'joint4',   'start_frame_name': 'fr3_link4', 'end_frame_name': 'fr3_link5_offset1', 'radius': 0.065},
     {'name': 'forearm1',   'start_frame_name': 'fr3_link5_offset2', 'end_frame_name': 'fr3_link5_offset3', 'radius': 0.035},
     {'name': 'forearm2',   'start_frame_name': 'fr3_link5_offset3', 'end_frame_name': 'fr3_link5', 'radius': 0.05},
-    {'name': 'wrist',     'start_frame_name': 'fr3_link7', 'end_frame_name': 'fr3_hand',  'radius': 0.055},
+    {'name': 'wrist',     'start_frame_name': 'fr3_link7', 'end_frame_name': 'fr3_hand',  'radius': 0.055}, # Change fr3_linkt to fr3_link7_offset1 for more accurate collision checking
     {'name': 'hand',     'start_frame_name': 'fr3_hand_offset1', 'end_frame_name': 'fr3_hand_offset2',  'radius': 0.03},
     {'name': 'end_effector',      'start_frame_name': EE_FRAME_NAME,  'end_frame_name': EE_FRAME_NAME, 'radius': 0.03},
 ]
@@ -794,7 +795,7 @@ class CbfControllerNode(Node):
         self.initial_gamma_js = 2.0
         self.initial_beta_js = 3.0
         self.d_margin = float(hocbf_params.get('d_margin', 0.0))
-        self.d_margin = max(0.002, self.d_margin)
+        self.d_margin = max(0.005, self.d_margin)
         self.output_basename = hocbf_params.get('output_data_basename', 'unnamed_scenario')
         self.initial_ee_pos = None
 
@@ -851,6 +852,18 @@ class CbfControllerNode(Node):
             10
         )
 
+        self.marker_publisher_3 = self.create_publisher(
+            Marker,
+            '/visualization_marker_3',
+            10
+        )
+
+        self.marker_publisher_4 = self.create_publisher(
+            Marker,
+            '/visualization_marker_4',
+            10
+        )
+
         self.bot_marker_publisher_1 = self.create_publisher(
             Marker,
             '/bot_marker_1',
@@ -875,6 +888,19 @@ class CbfControllerNode(Node):
             10
         )
 
+        self.bot_marker_publisher_5 = self.create_publisher(
+            Marker,
+            '/bot_marker_5',
+            10
+        )
+
+        # --- Publisher for the EE Trajectory Marker ---
+        self.trajectory_marker_publisher = self.create_publisher(
+            Marker,
+            '/ee_trajectory_marker',
+            10
+        )
+
         self.robot_joint_names = [
             'fr3_joint1', 'fr3_joint2', 'fr3_joint3', 'fr3_joint4',
             'fr3_joint5', 'fr3_joint6', 'fr3_joint7'
@@ -883,6 +909,9 @@ class CbfControllerNode(Node):
 
         # History for plotting ALL h and psi values (overall min)
         self.history_data_frames = []
+
+        # --- List to store the history of EE positions ---
+        self.ee_position_history = []
 
         # --- Dynamic CBF parameters (initially global values) ---
         self.current_gamma_js = self.initial_gamma_js
@@ -953,6 +982,8 @@ class CbfControllerNode(Node):
 
         min_h_current = float('inf')
         min_psi_current = float('inf')
+        min_dist_current = float('inf')
+
 
         # --- Track maximum required gamma for dynamic adjustment ---
         max_gamma_required_for_h = -float('inf') # Initialize with negative infinity
@@ -961,6 +992,11 @@ class CbfControllerNode(Node):
         # Ensure Pinocchio data is fresh before calculating h/psi
         pin.forwardKinematics(model, data, self.q_full_pin, self.dq_full_pin, np.zeros(model.nv))
         pin.updateFramePlacements(model, data)
+
+        # --- Record EE position for trajectory ---
+        current_ee_pos = data.oMf[EE_FRAME_ID].translation
+        self.ee_position_history.append(Point(x=current_ee_pos[0], y=current_ee_pos[1], z=current_ee_pos[2]))
+
 
         # --- LOOP for h, psi, and dynamic gamma/beta calculation for LINKS ---
         current_h_psi_values = {}
@@ -983,6 +1019,11 @@ class CbfControllerNode(Node):
                 J_C, v_C, a_drift_C = get_point_kinematics(
                     link_info['start_frame_id'], link_info['end_frame_id'], t, self.dq_full_pin
                 )
+
+                # --- Calculate and track minimum surface distance ---
+                dist_centers = np.linalg.norm(c_robot - c_obs)
+                dist_surfaces = dist_centers - (link_radius_val + obs_item['radius'])
+                min_dist_current = min(min_dist_current, dist_surfaces)
 
                 # --- 2. Calculate h, Lf_h, and update min_h ---
                 p_rel = c_robot - c_obs
@@ -1127,6 +1168,7 @@ class CbfControllerNode(Node):
             'time': current_time_s,
             'solve_time': timer.time() - start_solve_time,
             'min_h': min_h_current,
+            'min_dist': min_dist_current,
             'min_psi': min_psi_current,
             'qp_infeasible': not qp_solved,
             'joint_q': q_arm_current.tolist(),      # Store as list for compatibility
@@ -1272,16 +1314,10 @@ class CbfControllerNode(Node):
                 radius=obs['radius'],
                 r=1.0, g=0.5, b=0.0, a=0.7
             )
-            if i < 2:
-                self.marker_publisher_1.publish(marker_obs_cap1)
-                if not np.array_equal(obs['pose_start'], obs['pose_end']):
-                    self.marker_publisher_1.publish(marker_obs_cap2)
-                    self.marker_publisher_1.publish(marker_obs_cyl)
-            else:
-                self.marker_publisher_2.publish(marker_obs_cap1)
-                if not np.array_equal(obs['pose_start'], obs['pose_end']):
-                    self.marker_publisher_2.publish(marker_obs_cap2)
-                    self.marker_publisher_2.publish(marker_obs_cyl)
+            self.marker_publisher_2.publish(marker_obs_cap1)
+            if not np.array_equal(obs['pose_start'], obs['pose_end']):
+                self.marker_publisher_3.publish(marker_obs_cap2)
+                self.marker_publisher_4.publish(marker_obs_cyl)
 
         # Publish goal position marker
         # Marker ID for goal is after all obstacles
@@ -1296,6 +1332,7 @@ class CbfControllerNode(Node):
         pin.forwardKinematics(model, data, self.q_full_pin, self.dq_full_pin, np.zeros(model.nv))
         pin.updateFramePlacements(model, data)
 
+        bot_number_marker = 0
         for i, link_info in enumerate(active_links):
             p1 = data.oMf[link_info['start_frame_id']].translation
             p2 = data.oMf[link_info['end_frame_id']].translation
@@ -1321,16 +1358,101 @@ class CbfControllerNode(Node):
             )
 
             # Distribute markers among publishers (they don't plot well more than 5 markers at once)
-            if i % 2 == 0:
+            if bot_number_marker < 5:
                 self.bot_marker_publisher_1.publish(marker_cap_1)
+                bot_number_marker += 1
                 if p1.tolist() != p2.tolist():
-                    self.bot_marker_publisher_1.publish(marker_cap_2)
-                    self.bot_marker_publisher_3.publish(marker_link)
-            else:
+                    if bot_number_marker < 5:
+                        self.bot_marker_publisher_1.publish(marker_cap_2)
+                        bot_number_marker += 1
+                    else:
+                        self.bot_marker_publisher_2.publish(marker_cap_2)
+                        bot_number_marker += 1
+                    if bot_number_marker < 5:
+                        self.bot_marker_publisher_1.publish(marker_link)
+                        bot_number_marker += 1
+                    else:
+                        self.bot_marker_publisher_2.publish(marker_link)
+                        bot_number_marker += 1
+            elif bot_number_marker < 10:
                 self.bot_marker_publisher_2.publish(marker_cap_1)
+                bot_number_marker += 1
                 if p1.tolist() != p2.tolist():
-                    self.bot_marker_publisher_2.publish(marker_cap_2)
-                    self.bot_marker_publisher_4.publish(marker_link)
+                    if bot_number_marker < 10:
+                        self.bot_marker_publisher_2.publish(marker_cap_2)
+                        bot_number_marker += 1
+                    else:
+                        self.bot_marker_publisher_3.publish(marker_cap_2)
+                        bot_number_marker += 1
+                    if bot_number_marker < 10:
+                        self.bot_marker_publisher_2.publish(marker_link)
+                        bot_number_marker += 1
+                    else:
+                        self.bot_marker_publisher_3.publish(marker_link)
+                        bot_number_marker += 1
+            elif bot_number_marker < 15:
+                self.bot_marker_publisher_3.publish(marker_cap_1)
+                bot_number_marker += 1
+                if p1.tolist() != p2.tolist():
+                    if bot_number_marker < 15:
+                        self.bot_marker_publisher_3.publish(marker_cap_2)
+                        bot_number_marker += 1
+                    else:
+                        self.bot_marker_publisher_4.publish(marker_cap_2)
+                        bot_number_marker += 1
+                    if bot_number_marker < 15:
+                        self.bot_marker_publisher_3.publish(marker_link)
+                        bot_number_marker += 1
+                    else:
+                        self.bot_marker_publisher_4.publish(marker_link)
+                        bot_number_marker += 1
+            elif bot_number_marker < 20:
+                self.bot_marker_publisher_4.publish(marker_cap_1)
+                bot_number_marker += 1
+                if p1.tolist() != p2.tolist():
+                    if bot_number_marker < 20:
+                        self.bot_marker_publisher_4.publish(marker_cap_2)
+                        bot_number_marker += 1
+                    else:
+                        self.bot_marker_publisher_5.publish(marker_cap_2)
+                        bot_number_marker += 1
+                    if bot_number_marker < 20:
+                        self.bot_marker_publisher_4.publish(marker_link)
+                        bot_number_marker += 1
+                    else:
+                        self.bot_marker_publisher_5.publish(marker_link)
+                        bot_number_marker += 1
+            else:
+                self.bot_marker_publisher_5.publish(marker_cap_1)
+                if p1.tolist() != p2.tolist():
+                    self.bot_marker_publisher_5.publish(marker_cap_2)
+                    self.bot_marker_publisher_5.publish(marker_link)
+            
+        # --- Publish the End-Effector Trajectory Marker ---
+        if self.ee_position_history:
+            traj_marker = Marker()
+            traj_marker.header.frame_id = "world"
+            traj_marker.header.stamp = self.get_clock().now().to_msg()
+            traj_marker.ns = "ee_trajectory"
+            traj_marker.id = 0
+            traj_marker.type = Marker.LINE_STRIP
+            traj_marker.action = Marker.ADD
+
+            # Set the points for the line strip
+            traj_marker.points = self.ee_position_history
+
+            # Line strip settings
+            traj_marker.scale.x = 0.01  # Line width
+            traj_marker.color.r = 0.0
+            traj_marker.color.g = 1.0
+            traj_marker.color.b = 0.8  # Cyan
+            traj_marker.color.a = 1.0
+            
+            # This marker should persist and not auto-delete
+            traj_marker.lifetime = rclpy.duration.Duration(seconds=0).to_msg() 
+
+            self.trajectory_marker_publisher.publish(traj_marker)
+
 
     def save_and_plot_results(self):
         if not self.history_data_frames:

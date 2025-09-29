@@ -145,6 +145,22 @@
   </joint>
 
   <!-- ADDED: artificial link for better geometric approximation -->
+  <link name="fr3_link2_offset1"/>
+
+  <joint name="fr3_link2_offset1_joint" type="fixed">
+    <parent link="fr3_link2"/>
+    <child link="fr3_link2_offset1"/>
+    <origin xyz="0 0 0.1" rpy="0 0 0"/>
+  </joint>
+
+<link name="fr3_link2_offset2"/>
+
+  <joint name="fr3_link2_offset2_joint" type="fixed">
+    <parent link="fr3_link2"/>
+    <child link="fr3_link2_offset2"/>
+    <origin xyz="0 0 -0.1" rpy="0 0 0"/>
+  </joint>
+
   <link name="fr3_link5_offset1"/>
 
   <joint name="fr3_link5_to_elbow_offset1_joint" type="fixed">
@@ -167,6 +183,14 @@
     <parent link="fr3_link5"/>
     <child link="fr3_link5_offset3"/>
     <origin xyz="0 0.1 0" rpy="0 0 0"/>
+  </joint>
+
+  <link name="fr3_link7_offset1"/>
+
+  <joint name="fr3_link7_offset1_joint" type="fixed">
+    <parent link="fr3_link7"/>
+    <child link="fr3_link7_offset1"/>
+    <origin xyz="0 0 -0.03" rpy="0 0 0"/>
   </joint>
 
   <link name="fr3_hand_offset1"/>
