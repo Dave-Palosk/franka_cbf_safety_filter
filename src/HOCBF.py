@@ -47,12 +47,12 @@ except IndexError:
 
 # --- Define Control links on the Robot ---
 links_def = [
-    # {'name': 'link2_base', 'start_frame_name': 'fr3_link2_offset1', 'end_frame_name': 'fr3_link2_offset2', 'radius': 0.055}, # Uncomment for more accurate collision checking
+    {'name': 'link2_base', 'start_frame_name': 'fr3_link2_offset1', 'end_frame_name': 'fr3_link2_offset2', 'radius': 0.055},
     {'name': 'link2', 'start_frame_name': 'fr3_link2', 'end_frame_name': 'fr3_link3', 'radius': 0.06},
     {'name': 'joint4',   'start_frame_name': 'fr3_link4', 'end_frame_name': 'fr3_link5_offset1', 'radius': 0.065},
     {'name': 'forearm1',   'start_frame_name': 'fr3_link5_offset2', 'end_frame_name': 'fr3_link5_offset3', 'radius': 0.035},
     {'name': 'forearm2',   'start_frame_name': 'fr3_link5_offset3', 'end_frame_name': 'fr3_link5', 'radius': 0.05},
-    {'name': 'wrist',     'start_frame_name': 'fr3_link7', 'end_frame_name': 'fr3_hand',  'radius': 0.055}, # Change fr3_linkt to fr3_link7_offset1 for more accurate collision checking
+    {'name': 'wrist',     'start_frame_name': 'fr3_link7_offset1', 'end_frame_name': 'fr3_hand',  'radius': 0.055},
     {'name': 'hand',     'start_frame_name': 'fr3_hand_offset1', 'end_frame_name': 'fr3_hand_offset2',  'radius': 0.03},
     {'name': 'end_effector',      'start_frame_name': EE_FRAME_NAME,  'end_frame_name': EE_FRAME_NAME, 'radius': 0.03},
 ]
@@ -84,14 +84,15 @@ if not active_links:
     rclpy.logging.get_logger('cbf_controller_node').error("No active links defined. Cannot run CBF. Exiting.")
     exit()
 
-ddq_max_scalar = 40.0  # rad/s^2 (Adjusted from 10.0*0.5 to a more reasonable value for simulation)
+ddq_max_scalar = 40.0  # rad/s^2
 ddq_max_arm = np.full(NUM_ARM_JOINTS, ddq_max_scalar)
 ddq_min_arm = np.full(NUM_ARM_JOINTS, -ddq_max_scalar)
 
-# Joint velocity limits (from your script)
+# Joint velocity limits
 dq_max_arm = np.array([2.0, 1.0, 1.5, 1.25, 3.0, 1.5, 3.0]) # rad/s
 dq_min_arm = - dq_max_arm # Symmetric limits
 
+# Joint position limits
 q_max_arm = np.array([2.7437, 1.7837, 2.9007, -0.1518, 2.8065, 4.5169, 3.0159])
 q_min_arm = np.array([-2.7437, -1.7837, -2.9007, -3.0421, -2.8065, 0.5445, -3.0159])
 
@@ -106,7 +107,7 @@ BETA_MAX_LIMIT = 250.0 # Upper limit for dynamically adjusted beta_js
 def get_closest_points_between_segments(p1, p2, q1, q2):
     """
     Calculates the closest points between two line segments (p1, p2) and (q1, q2).
-    This is a robust implementation that correctly handles all edge cases.
+
 
     Args:
         p1, p2 (np.array): Endpoints of the first segment.
@@ -199,13 +200,14 @@ def Lf_h(p_rel, v_rel):
     return 2 * np.dot(p_rel, v_rel)
 
 def psi_func(h_val, Lf_h_val, gamma_param):
+    """Psi function for HOCBF."""
     return Lf_h_val + gamma_param * h_val
 
 def Lf_psi(v_rel, a_drift_rel, p_rel, Lf_h_val, gamma_param):
     """Lie derivative of psi along f. a_drift_rel = a_robot - a_obstacle."""
     term_vel_sq = 2 * np.dot(v_rel, v_rel)
     term_accel = 2 * np.dot(p_rel, a_drift_rel)
-    return term_vel_sq + term_accel + gamma_param * Lf_h_val
+    return term_vel_sq + gamma_param * Lf_h_val # + term_accel
 
 def Lg_psi(J_p_robot_closest, p_rel):
     """Lie derivative of psi along g (actuation)."""
@@ -226,10 +228,15 @@ def get_point_kinematics(start_frame_id, end_frame_id, t, dq_full_curr):
     v_C = J_C @ dq_full_curr
     return J_C, v_C, a_drift_C
 
-# --- Nominal Controller (Joint Space PD to Cartesian Goal) - Copied from your CBF script ---
+# --- Nominal Controller (Joint Space PD to Cartesian Goal) ---
 def nominal_controller_js(q_arm_curr, dq_arm_curr, target_ee_pos_cartesian, target):
     Kp_cart = 500.0 # Your current Kp
     Kd_cart = 50.0 # Your current Kd
+    alpha = 0.01
+    lambda_damp = 0.01 # Damping for pseudo-inverse
+    
+    Kp_joint_limit = 200.0  # Gain for the repulsive force
+    activation_threshold = 0.9 # (e.g., 0.9 means start avoiding at 90% of the joint range)
 
     q_full_curr = np.zeros(model.nq)
     q_full_curr[:NUM_ARM_JOINTS] = q_arm_curr
@@ -245,7 +252,6 @@ def nominal_controller_js(q_arm_curr, dq_arm_curr, target_ee_pos_cartesian, targ
     J_ee_full = pin.getFrameJacobian(model, data, EE_FRAME_ID, pin.ReferenceFrame.LOCAL_WORLD_ALIGNED)
     J_ee_p_arm = J_ee_full[:3, :NUM_ARM_JOINTS]
 
-    alpha = 0.01
     target = target_ee_pos_cartesian
     target = (1-alpha)*target + alpha*target_ee_pos_cartesian
     error_pos_cart = target - current_ee_pos
@@ -254,16 +260,12 @@ def nominal_controller_js(q_arm_curr, dq_arm_curr, target_ee_pos_cartesian, targ
 
     f_desired_cart = Kp_cart * error_pos_cart + Kd_cart * error_vel_cart
 
-    lambda_damp = 0.01 # Damping for pseudo-inverse
     # Use np.linalg.pinv directly as it's more robust
     J_pseudo_inv = np.linalg.pinv(J_ee_p_arm, rcond=lambda_damp)
     
-    #ddq_nominal_arm = J_ee_p_arm.T @ f_desired_cart 
     ddq_primary_task = J_pseudo_inv @ f_desired_cart
 
     # Joint Limit Avoidance
-    Kp_joint_limit = 200.0  # Gain for the repulsive force
-    activation_threshold = 0.9 # (e.g., 0.9 means start avoiding at 90% of the joint range)
 
     # Calculate the middle point and range for each joint
     q_mid = (q_max_arm + q_min_arm) / 2.0
@@ -289,7 +291,6 @@ def nominal_controller_js(q_arm_curr, dq_arm_curr, target_ee_pos_cartesian, targ
         
     ddq_nominal_arm = ddq_primary_task + ddq_secondary_projected
     
-    # ddq_nominal_arm = np.clip(ddq_nominal_arm, ddq_min_arm, ddq_max_arm)
     return ddq_nominal_arm, target
 
 def joint_space_pid_controller(q_current, dq_current, q_target, dq_target):
@@ -852,18 +853,60 @@ class CbfControllerNode(Node):
 
         # --- LOOP for h, psi, and dynamic gamma/beta calculation for LINKS ---
         current_h_psi_values = {}
+
         for link_info in active_links:
-            # Get link properties
             start_frame_id = link_info['start_frame_id']
             end_frame_id = link_info['end_frame_id']
             link_radius_val = link_info['radius']
 
-            # Get 3D positions of the link's start and end points from pre-updated data
             p1 = data.oMf[start_frame_id].translation
             p2 = data.oMf[end_frame_id].translation
 
             for obs_idx, obs_item in enumerate(self.current_obstacles_list_sim):
-                # --- 1. Find the closest points between the two capsule segments ---
+                c_robot, c_obs, t = get_closest_points_between_segments(
+                    p1, p2, obs_item['pose_start'], obs_item['pose_end']
+                )
+                
+                J_C, v_C, a_drift_C = get_point_kinematics(
+                    link_info['start_frame_id'], link_info['end_frame_id'], t, self.dq_full_pin
+                )
+
+                dist_centers = np.linalg.norm(c_robot - c_obs)
+                dist_surfaces = dist_centers - (link_radius_val + obs_item['radius'])
+                min_dist_current = min(min_dist_current, dist_surfaces)
+
+                p_rel = c_robot - c_obs
+                h_val = h_func(p_rel, link_radius_val, obs_item['radius'], self.d_margin)
+                min_h_current = min(min_h_current, h_val)
+                
+                v_rel = v_C - obs_item['velocity']
+                a_drift_rel = a_drift_C
+                
+                Lf_h_val = Lf_h(p_rel, v_rel)
+
+                # Step 1: Calculate required gamma for this pair
+                if h_val > EPSILON_DENOMINATOR:
+                    gamma_needed_for_pair = -Lf_h_val / h_val
+                    max_gamma_required_for_h = max(max_gamma_required_for_h, gamma_needed_for_pair)
+                elif h_val < -EPSILON_DENOMINATOR:
+                    max_gamma_required_for_h = GAMMA_MAX_LIMIT
+
+        # --- Adjust gamma_js FIRST ---
+        if max_gamma_required_for_h > -float('inf'):
+            adjusted_gamma = max(0.0, max_gamma_required_for_h + GAMMA_ADJUST_BUFFER)
+            self.current_gamma_js = max(self.initial_gamma_js, min(adjusted_gamma, GAMMA_MAX_LIMIT))
+        # else: keep current_gamma_js
+
+        # Now recalc beta with updated gamma
+        for link_info in active_links:
+            start_frame_id = link_info['start_frame_id']
+            end_frame_id = link_info['end_frame_id']
+            link_radius_val = link_info['radius']
+
+            p1 = data.oMf[start_frame_id].translation
+            p2 = data.oMf[end_frame_id].translation
+
+            for obs_idx, obs_item in enumerate(self.current_obstacles_list_sim):
                 c_robot, c_obs, t = get_closest_points_between_segments(
                     p1, p2, obs_item['pose_start'], obs_item['pose_end']
                 )
@@ -872,60 +915,44 @@ class CbfControllerNode(Node):
                     link_info['start_frame_id'], link_info['end_frame_id'], t, self.dq_full_pin
                 )
 
-                # --- Calculate and track minimum surface distance ---
-                dist_centers = np.linalg.norm(c_robot - c_obs)
-                dist_surfaces = dist_centers - (link_radius_val + obs_item['radius'])
-                min_dist_current = min(min_dist_current, dist_surfaces)
-
-                # --- 2. Calculate h, Lf_h, and update min_h ---
                 p_rel = c_robot - c_obs
-                h_val = h_func(p_rel, link_radius_val, obs_item['radius'], self.d_margin)
-                min_h_current = min(min_h_current, h_val)
-                
                 v_rel = v_C - obs_item['velocity']
-                a_drift_rel = a_drift_C # - a_obs_drift (which is 0)
+                a_drift_rel = a_drift_C
+
                 Lf_h_val = Lf_h(p_rel, v_rel)
-
-                # --- 3. Calculate required gamma ---
-                if h_val > EPSILON_DENOMINATOR:
-                    gamma_needed_for_pair = -Lf_h_val / h_val
-                    max_gamma_required_for_h = max(max_gamma_required_for_h, gamma_needed_for_pair)
-                elif h_val < -EPSILON_DENOMINATOR:
-                    max_gamma_required_for_h = GAMMA_MAX_LIMIT
-
-                # --- 4. Calculate psi and update min_psi (using the dynamically adjusted gamma for THIS step) ---
-                psi_val = psi_func(h_val, Lf_h_val, self.current_gamma_js)
+                psi_val = psi_func(h_func(p_rel, link_radius_val, obs_item['radius'], self.d_margin), Lf_h_val, self.current_gamma_js)
+                
+                # --- 4. Update min_psi (using the dynamically adjusted gamma for THIS step) ---
                 min_psi_current = min(min_psi_current, psi_val)
-
-                # --- 5. Calculate required beta ---
+                
                 Lf_psi_val = Lf_psi(v_rel, a_drift_rel, p_rel, Lf_h_val, self.current_gamma_js)
                 Lg_psi_val = Lg_psi(J_C, p_rel).flatten()
                 
-                sup_Lg_psi_u = np.sum(np.where(Lg_psi_val >= 0, Lg_psi_val * ddq_max_kinematic, Lg_psi_val * ddq_min_kinematic))
+                sup_Lg_psi_u = np.sum(np.where(
+                    Lg_psi_val >= 0, 
+                    Lg_psi_val * ddq_max_kinematic, 
+                    Lg_psi_val * ddq_min_kinematic))
+                
                 S_sup_val = Lf_psi_val + sup_Lg_psi_u
-
+                
                 if psi_val > EPSILON_DENOMINATOR:
                     beta_needed_for_pair = -S_sup_val / psi_val
                     max_beta_required_for_psi = max(max_beta_required_for_psi, beta_needed_for_pair)
                 elif psi_val < -EPSILON_DENOMINATOR:
                     max_beta_required_for_psi = BETA_MAX_LIMIT
 
-                # --- 6. Store individual h and psi values for logging/plotting ---
                 key = f"{link_info['name']}_obs{obs_idx}"
-                current_h_psi_values[f'h_{key}'] = h_val
+                current_h_psi_values[f'h_{key}'] = h_func(p_rel, link_radius_val, obs_item['radius'], self.d_margin)
                 current_h_psi_values[f'psi_{key}'] = psi_val
 
-        # --- Dynamically adjust gamma_js (This block is mostly the same, just follows the new loop) ---
-        if max_gamma_required_for_h > -float('inf'):
-            adjusted_gamma = max(0.0, max_gamma_required_for_h + GAMMA_ADJUST_BUFFER)
-            self.current_gamma_js = max(self.initial_gamma_js, min(adjusted_gamma, GAMMA_MAX_LIMIT))
-        # else: we keep the current_gamma_js
+                current_h_psi_values[f'a_drift_norm_{key}'] = np.linalg.norm(a_drift_C)
+                current_h_psi_values[f'Lf_psi_{key}'] = Lf_psi_val
 
-        # --- Dynamically adjust beta_js (This block is mostly the same) ---
+        # --- Adjust beta_js AFTER gamma ---
         if max_beta_required_for_psi > -float('inf'):
             adjusted_beta = max(0.0, max_beta_required_for_psi + BETA_ADJUST_BUFFER)
             self.current_beta_js = max(self.initial_beta_js, min(adjusted_beta, BETA_MAX_LIMIT))
-        # else: we keep the current_beta_js
+        # else: keep current_beta_js
 
 
         # Record current time
