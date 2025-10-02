@@ -23,28 +23,6 @@ controller_manager:
         state_interfaces:
           - position
           - velocity
-
-    joint_velocity_controller:
-      type: cbf_safety_filter/JointVeocityController
-    
-    joint_velocity_controller:
-    ros__parameters:
-        gazebo: true
-        arm_id: "fr3"  # Or dynamically from launch file if preferred later
-        target_joints_topic: "/joint_velocity_controller/joint_targets" # Default topic name
-        joints:
-          - fr3_joint1
-          - fr3_joint2
-          - fr3_joint3
-          - fr3_joint4
-          - fr3_joint5
-          - fr3_joint6
-          - fr3_joint7
-        command_interfaces:
-          - velocity
-        state_interfaces:
-          - position
-          - velocity
       
     joint_state_broadcaster:
       type: joint_state_broadcaster/JointStateBroadcaster

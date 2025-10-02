@@ -222,183 +222,6 @@ def get_point_kinematics(start_frame_id, end_frame_id, t, dq_full_curr):
 
     v_C = J_C @ dq_full_curr
     return J_C, v_C
-
-# --- Nominal Controller (Joint Space PD to Cartesian Goal) ---
-def nominal_controller_js(q_arm_curr, dq_arm_curr, target_ee_pos_cartesian, target):
-    Kp_cart = 500.0 # Your current Kp
-    Kd_cart = 50.0 # Your current Kd
-    alpha = 0.01
-    lambda_damp = 0.01 # Damping for pseudo-inverse
-    
-    Kp_joint_limit = 200.0  # Gain for the repulsive force
-    activation_threshold = 0.9 # (e.g., 0.9 means start avoiding at 90% of the joint range)
-
-    q_full_curr = np.zeros(model.nq)
-    q_full_curr[:NUM_ARM_JOINTS] = q_arm_curr
-    dq_full_curr = np.zeros(model.nv)
-    dq_full_curr[:NUM_ARM_JOINTS] = dq_arm_curr
-
-    # Perform kinematics once for nominal controller
-    pin.forwardKinematics(model, data, q_full_curr, dq_full_curr, np.zeros(model.nv))
-    pin.computeJointJacobians(model, data, q_full_curr)
-    pin.updateFramePlacements(model, data)
-    
-    current_ee_pos = data.oMf[EE_FRAME_ID].translation
-    J_ee_full = pin.getFrameJacobian(model, data, EE_FRAME_ID, pin.ReferenceFrame.LOCAL_WORLD_ALIGNED)
-    J_ee_p_arm = J_ee_full[:3, :NUM_ARM_JOINTS]
-
-    target = target_ee_pos_cartesian
-    target = (1-alpha)*target + alpha*target_ee_pos_cartesian
-    error_pos_cart = target - current_ee_pos
-    current_ee_vel_cart = J_ee_p_arm @ dq_arm_curr
-    error_vel_cart = -current_ee_vel_cart
-
-    f_desired_cart = Kp_cart * error_pos_cart + Kd_cart * error_vel_cart
-
-    # Use np.linalg.pinv directly as it's more robust
-    J_pseudo_inv = np.linalg.pinv(J_ee_p_arm, rcond=lambda_damp)
-    
-    ddq_primary_task = J_pseudo_inv @ f_desired_cart
-
-    # Joint Limit Avoidance
-
-    # Calculate the middle point and range for each joint
-    q_mid = (q_max_arm + q_min_arm) / 2.0
-    q_range = q_max_arm - q_min_arm
-    
-    ddq_secondary_task = np.zeros(NUM_ARM_JOINTS)
-    
-    for i in range(NUM_ARM_JOINTS):
-        # Check if the joint is within the activation zone near its limits
-        if abs(q_arm_curr[i] - q_mid[i]) / q_range[i] > (activation_threshold / 2.0):
-            # This calculates a "repulsive" acceleration that pushes the joint back towards its center
-            gradient = -2 * (q_arm_curr[i] - q_mid[i]) / (q_range[i]**2)
-            ddq_secondary_task[i] = Kp_joint_limit * gradient
-
-    # --- Null-Space Projection ---
-
-    # 1. Calculate the null-space projector for the Jacobian
-    I = np.identity(NUM_ARM_JOINTS)
-    null_space_projector = I - J_pseudo_inv @ J_ee_p_arm
-    
-    # 2. Project the secondary task into the null space
-    ddq_secondary_projected = null_space_projector @ ddq_secondary_task
-        
-    ddq_nominal_arm = ddq_primary_task + ddq_secondary_projected
-    
-    return ddq_nominal_arm, target
-
-def joint_space_pid_controller(q_current, dq_current, q_target, dq_target):
-    """
-    A simple joint-space PD controller to track a target state.
-    """
-    Kp = 400.0
-    Kd = 40.0
-
-    error_pos = q_target - q_current
-    error_vel = dq_target - dq_current
-
-    # Calculate the desired joint acceleration
-    ddq_nominal = Kp * error_pos + Kd * error_vel
-    return ddq_nominal
-
-
-# --- Nominal Controller (MPC to Cartesian Goal) ---
-    
-import casadi as ca
-def nominal_controller_mpc(q_arm_curr, dq_arm_curr, target_ee_pos_cartesian, dt):
-    """
-    A simple kinematic MPC to generate a nominal joint acceleration command.
-    This controller respects joint limits but is blind to obstacles.
-    """
-    # --- MPC Parameters (Tuned for stability and speed) ---
-    N = 7          # Prediction horizon (longer horizon for smoother plans)
-    Q_pos = 100.0  # Weight for end-effector position error (reduced for less aggression)
-    R_accel = 0.001   # Weight for control effort (encourages smaller accelerations)
-    W_jerk = 0.01    # Weight for jerk cost (encourages smooth accelerations)
-
-    # --- Setup the Optimization Problem with CasADi ---
-    opti = ca.Opti()
-
-    # Decision variables (control inputs)
-    ddq = opti.variable(NUM_ARM_JOINTS, N)
-
-    # State variables (predicted trajectory)
-    q = opti.variable(NUM_ARM_JOINTS, N + 1)
-    dq = opti.variable(NUM_ARM_JOINTS, N + 1)
-
-    # --- Cost Function ---
-    cost = 0
-    cost += R_accel * ca.sumsqr(ddq) # Penalize large control inputs
-
-    # --- Constraints ---
-    # Initial state constraint
-    opti.subject_to(q[:, 0] == q_arm_curr)
-    opti.subject_to(dq[:, 0] == dq_arm_curr)
-
-    max_decel = np.abs(ddq_min_arm)
-    stop_cost = 0
-    jerk_cost = 0
-
-    q_full_pin = np.zeros(model.nq)
-    q_full_pin[:NUM_ARM_JOINTS] = q_arm_curr
-    pin.forwardKinematics(model, data, q_full_pin)
-    pin.computeJointJacobians(model, data, q_full_pin)
-    pin.updateFramePlacements(model, data)
-    
-    J_ee_full = pin.getFrameJacobian(model, data, EE_FRAME_ID, pin.ReferenceFrame.LOCAL_WORLD_ALIGNED)
-    J_ee_p_arm = J_ee_full[:3, :NUM_ARM_JOINTS]
-    current_ee_pos = data.oMf[EE_FRAME_ID].translation
-
-    # System dynamics and state/input constraints over the horizon
-    for k in range(N):
-        # Kinematic integration (Euler)
-        q_next = q[:, k] + dq[:, k] * dt + 0.5 * ddq[:, k] * dt**2
-        dq_next = dq[:, k] + ddq[:, k] * dt
-
-        opti.subject_to(q[:, k + 1] == q_next)
-        opti.subject_to(dq[:, k + 1] == dq_next)
-
-        # CRITICAL: Enforce all joint limits on the predicted trajectory
-        opti.subject_to(opti.bounded(q_min_arm, q[:, k + 1], q_max_arm))
-        opti.subject_to(opti.bounded(dq_min_arm, dq[:, k + 1], dq_max_arm))
-        # opti.subject_to(opti.bounded(ddq_min_arm, ddq[:, k], ddq_max_arm))
-
-        # Stop Cost
-        time_to_stop = (N - 1 - k) * dt
-        dq_max_stoppable = max_decel * time_to_stop
-        velocity_overshoot = ca.fmax(0, ca.fabs(dq[:, k+1]) - dq_max_stoppable)
-        stop_cost += ca.sumsqr(velocity_overshoot)
-
-        # Jerk Cost (applied to the decision variables)
-        if k > 0:
-            jerk_cost += ca.sumsqr(ddq[:, k] - ddq[:, k-1])
-
-        # --- Terminal Cost (End-Effector Position) ---
-        predicted_ee_pos = current_ee_pos + J_ee_p_arm @ (q[:, k] - q_arm_curr)
-        error_pos_cart = predicted_ee_pos - target_ee_pos_cartesian
-        cost += Q_pos**(k/2) * ca.sumsqr(error_pos_cart)
-
-    cost += W_jerk * jerk_cost
-    
-    opti.minimize(cost)
-
-    # --- Solve the QP ---
-    p_opts = {"expand": True}
-    # Use 'qpoases' for a massive speedup on this QP problem
-    s_opts = {"print_level": 0, "sb": "yes"} 
-    opti.solver("ipopt", p_opts, s_opts)
-
-    try:
-        sol = opti.solve()
-        # ddq_nominal_arm = sol.value(ddq[:, 0])
-        planned_q = sol.value(q)
-        planned_dq = sol.value(dq)
-        
-        return planned_q, planned_dq
-    except RuntimeError:
-        print("MPC Solver failed. Returning None.")
-        return None, None
     
 
 # --- HOCBF-QP Safety Filter ---
@@ -605,6 +428,17 @@ class CbfControllerNode(Node):
         )
         self.joint_state_subscription
 
+        self.nominal_acceleration_subscription = self.create_subscription(
+            Float64MultiArray,
+            '/nominal_joint_acceleration',
+            self.nominal_acceleration_callback,
+            10
+        )
+        self.nominal_acceleration_subscription
+
+        # Add state variable to store received acceleration
+        self.latest_nominal_acceleration = None
+
         # Publisher for joint position commands to the C++ controller
         self.joint_command_publisher = self.create_publisher(
             Float64MultiArray,
@@ -698,29 +532,14 @@ class CbfControllerNode(Node):
         self.q_full_pin = np.zeros(model.nq)
         self.dq_full_pin = np.zeros(model.nv)
 
-        # --- Hierarchical Controller State ---
-        self.mpc_planned_trajectory = None  # To store the trajectory from MPC
-        self.mpc_trajectory_start_time = 0.0
-        self.mpc_solve_time = 0.0
-        self.pid_integral_error = np.zeros(NUM_ARM_JOINTS)
-        self.pid_previous_error = np.zeros(NUM_ARM_JOINTS)
-
-        self.target = [0.307, 0.0, 0.487] # Initial target position for the end-effector in Cartesian space
-
-
         # --- Control Loop Frequencies ---
-        self.mpc_frequency = 10  # Hz
-        self.pid_frequency = 50  # Hz
+        self.frequency = 50  # Hz
 
-        self.mpc_dt = 1.0 / self.mpc_frequency
-        self.dt = 1.0 / self.pid_frequency
+        self.dt = 1.0 / self.frequency
 
         # --- Timers for Each Loop ---
         # High-frequency loop for PID tracking and safety filter
-        self.pid_timer = self.create_timer(self.dt, self.pid_and_safety_loop)
-
-        # Low-frequency loop for MPC planning
-        self.mpc_timer = self.create_timer(self.mpc_dt, self.mpc_planning_loop)
+        self.pid_timer = self.create_timer(self.dt, self.safety_filter_loop)
 
         # Timer for publishing markers (can be slower than control loop)
         self.marker_publish_timer = self.create_timer(0.5, self.publish_markers) # Publish markers every 0.5 seconds
@@ -755,44 +574,21 @@ class CbfControllerNode(Node):
         # Also update Pinocchio's full state based on actual robot state
         self.q_full_pin[:self.num_arm_joints] = self.current_joint_positions
         self.dq_full_pin[:self.num_arm_joints] = self.current_joint_velocities
-
-    def mpc_planning_loop(self):
+    
+    def nominal_acceleration_callback(self, msg):
         """
-        Runs the slow MPC to generate a future trajectory of joint states.
+        Receives nominal joint acceleration from the MPC/PID controller.
         """
-        if not self.received_first_joint_state or self.is_shutdown_initiated:
-            self.get_logger().info("Control loop skipped: No joint state received yet or shutdown initiated.")
-            return
+        if len(msg.data) == NUM_ARM_JOINTS:
+            self.latest_nominal_acceleration = np.array(msg.data)
 
-        q_arm_current = self.current_joint_positions
-        dq_arm_current = self.current_joint_velocities
-
-        start_mpc_solve_time = timer.time()
-
-        # Solve the MPC to get a plan of future states (q and dq)
-        planned_q, planned_dq = nominal_controller_mpc(
-            q_arm_current,
-            dq_arm_current,
-            self.goal_ee_pos,
-            self.mpc_dt
-        )
-
-        self.mpc_solve_time = timer.time() - start_mpc_solve_time
-
-        # If the MPC solved successfully, store the trajectory
-        if planned_q is not None and planned_dq is not None:
-            self.mpc_planned_trajectory = {'q': planned_q, 'dq': planned_dq}
-            # Record the time the trajectory was generated
-            current_time_ns = self.get_clock().now().nanoseconds
-            self.mpc_trajectory_start_time = (current_time_ns - self.start_time_ns) / 1e9
-
-    def pid_and_safety_loop(self):
+    def safety_filter_loop(self):
         if not self.received_first_joint_state or self.is_shutdown_initiated:
             return
         
-        # If we don't have a plan from the MPC yet, do nothing
-        if self.mpc_planned_trajectory is None:
-            self.get_logger().info("Waiting for first MPC trajectory...", throttle_duration_sec=1)
+        # If we don't have a nominal acceleration yet, do nothing
+        if self.latest_nominal_acceleration is None:
+            self.get_logger().info('Waiting for nominal acceleration...', throttle_duration_sec=1.0)
             return
         
         for obs in self.current_obstacles_list_sim:
@@ -800,6 +596,7 @@ class CbfControllerNode(Node):
 
         q_arm_current = self.current_joint_positions
         dq_arm_current = self.current_joint_velocities
+        ddq_nominal_arm_cmd = self.latest_nominal_acceleration
 
         min_h_current = float('inf')
         min_psi_current = float('inf')
@@ -941,7 +738,7 @@ class CbfControllerNode(Node):
         current_time_s = (current_time_ns - self.start_time_ns) / 1e9
 
         # --- Check for termination conditions at the end of the loop ---
-        # Get current EE position from Pinocchio data
+        # Get current EE position from Pinocchio data (already updated in your loop)
         current_ee_pos = data.oMf[EE_FRAME_ID].translation
         distance_to_goal = np.linalg.norm(current_ee_pos - self.goal_ee_pos)
 
@@ -972,34 +769,8 @@ class CbfControllerNode(Node):
             self.is_shutdown_initiated = True
             self.destroy_node()
             return
-
-        
-        # --- HIERARCHICAL CONTROL LOGIC ---
-        # 1. Determine the current time relative to the MPC plan's start time
-        time_since_plan_start = current_time_s - self.mpc_trajectory_start_time
-
-        # 2. Find the correct setpoint from the MPC's trajectory
-        target_index = int(np.floor(time_since_plan_start / self.mpc_dt)) + 1
-        
-        # Ensure the index is within the bounds of the trajectory
-        num_steps_in_plan = self.mpc_planned_trajectory['q'].shape[1]
-        if target_index >= num_steps_in_plan:
-            target_index = num_steps_in_plan - 1
-
-        q_target = self.mpc_planned_trajectory['q'][:, target_index]
-        dq_target = self.mpc_planned_trajectory['dq'][:, target_index]
-        
-        
-        # 3. Use the PID controller to get the nominal acceleration
-        ddq_nominal_arm_cmd = joint_space_pid_controller(
-            q_arm_current, dq_arm_current, q_target, dq_target
-        )
         
         start_solve_time = timer.time()
-
-        # ddq_nominal_arm_cmd, self.target = nominal_controller_js(q_arm_current, dq_arm_current, self.goal_ee_pos, self.target)
-        # ddq_nominal_arm_cmd = nominal_controller_mpc(q_arm_current, dq_arm_current, self.goal_ee_pos, self.dt)
-
         
         # Safety filter (CBF-QP)
         # Pass the node's logger to the QP solver for better logging
@@ -1008,7 +779,6 @@ class CbfControllerNode(Node):
             self.current_beta_js, self.d_margin, self.current_obstacles_list_sim, active_links, self.get_logger()
         )
         
-
         # Use nominal controller
         # qp_solved = True
         # ddq_safe_arm_cmd = ddq_nominal_arm_cmd
@@ -1028,7 +798,6 @@ class CbfControllerNode(Node):
         step_data = {
             'time': current_time_s,
             'solve_time': timer.time() - start_solve_time,
-            'mpc_solve_time': self.mpc_solve_time,
             'min_h': min_h_current,
             'min_dist': min_dist_current,
             'min_psi': min_psi_current,

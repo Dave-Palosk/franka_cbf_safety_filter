@@ -29,9 +29,7 @@ find_package(moveit_msgs REQUIRED)
 add_library(
         ${PROJECT_NAME}
         SHARED
-        src/joint_velocity_example_controller.cpp
-        src/joint_position_controller.cpp
-        src/joint_velocity_controller.cpp)
+        src/joint_position_controller.cpp)
 target_include_directories(
         ${PROJECT_NAME}
         PUBLIC
@@ -82,6 +80,21 @@ install(
 
 install(
   PROGRAMS src/HOCBF.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(
+  PROGRAMS src/safety_filter.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(
+  PROGRAMS src/mpc_nominal_controller.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(
+  PROGRAMS src/pd_nominal_controller.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
