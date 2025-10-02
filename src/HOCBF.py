@@ -186,7 +186,7 @@ def get_closest_points_between_segments(p1, p2, q1, q2):
     c1 = p1 + s * u
     c2 = q1 + t * v
     
-    return c1, c2, s
+    return c1, c2, s, t
 
 
 # --- Joint Space HOCBF Functions ---
@@ -203,11 +203,10 @@ def psi_func(h_val, Lf_h_val, gamma_param):
     """Psi function for HOCBF."""
     return Lf_h_val + gamma_param * h_val
 
-def Lf_psi(v_rel, a_drift_rel, p_rel, Lf_h_val, gamma_param):
-    """Lie derivative of psi along f. a_drift_rel = a_robot - a_obstacle."""
+def Lf_psi(v_rel, Lf_h_val, gamma_param):
+    """Lie derivative of psi along f."""
     term_vel_sq = 2 * np.dot(v_rel, v_rel)
-    term_accel = 2 * np.dot(p_rel, a_drift_rel)
-    return term_vel_sq + gamma_param * Lf_h_val # + term_accel
+    return term_vel_sq + gamma_param * Lf_h_val
 
 def Lg_psi(J_p_robot_closest, p_rel):
     """Lie derivative of psi along g (actuation)."""
@@ -221,12 +220,8 @@ def get_point_kinematics(start_frame_id, end_frame_id, t, dq_full_curr):
     J_full_p2 = pin.getFrameJacobian(model, data, end_frame_id, pin.ReferenceFrame.LOCAL_WORLD_ALIGNED)[:3, :]
     J_C = (1 - t) * J_full_p1 + t * J_full_p2
 
-    a_drift_p1 = pin.getFrameClassicalAcceleration(model, data, start_frame_id, pin.ReferenceFrame.LOCAL_WORLD_ALIGNED).linear
-    a_drift_p2 = pin.getFrameClassicalAcceleration(model, data, end_frame_id, pin.ReferenceFrame.LOCAL_WORLD_ALIGNED).linear
-    a_drift_C = (1 - t) * a_drift_p1 + t * a_drift_p2
-
     v_C = J_C @ dq_full_curr
-    return J_C, v_C, a_drift_C
+    return J_C, v_C
 
 # --- Nominal Controller (Joint Space PD to Cartesian Goal) ---
 def nominal_controller_js(q_arm_curr, dq_arm_curr, target_ee_pos_cartesian, target):
@@ -320,7 +315,6 @@ def nominal_controller_mpc(q_arm_curr, dq_arm_curr, target_ee_pos_cartesian, dt)
     N = 7          # Prediction horizon (longer horizon for smoother plans)
     Q_pos = 100.0  # Weight for end-effector position error (reduced for less aggression)
     R_accel = 0.001   # Weight for control effort (encourages smaller accelerations)
-    W_stop = 0.01   # Weight for stopping cost (dampens motion near goal)
     W_jerk = 0.01    # Weight for jerk cost (encourages smooth accelerations)
 
     # --- Setup the Optimization Problem with CasADi ---
@@ -385,16 +379,8 @@ def nominal_controller_mpc(q_arm_curr, dq_arm_curr, target_ee_pos_cartesian, dt)
         error_pos_cart = predicted_ee_pos - target_ee_pos_cartesian
         cost += Q_pos**(k/2) * ca.sumsqr(error_pos_cart)
 
-    # cost += W_stop * stop_cost
     cost += W_jerk * jerk_cost
-
-    # Terminal Constraint only if the initial error_pos_cart is small enough
-    # if np.linalg.norm(target_ee_pos_cartesian - current_ee_pos) < 0.2:
-    #     opti.subject_to(error_pos_cart < 0.01)
-    #     opti.subject_to(error_pos_cart > -0.01)
-    #     opti.subject_to(dq[:, N] <= 0.005)
-    #     opti.subject_to(dq[:, N] >= -0.005)
-
+    
     opti.minimize(cost)
 
     # --- Solve the QP ---
@@ -443,8 +429,8 @@ def solve_hocbf_qp_js(dt_val, q_full_curr, dq_full_curr, ddq_nominal_arm_val, cu
         p2 = data.oMf[end_frame_id].translation
 
         for obs_item in current_obstacles_list_sim:
-            # --- 1. FFind the closest points between the two capsule segments ---
-            c_robot, c_obs, t = get_closest_points_between_segments(
+            # --- 1. Find the closest points between the two capsule segments ---
+            c_robot, c_obs, t1, t2 = get_closest_points_between_segments(
                 p1, p2, obs_item['pose_start'], obs_item['pose_end']
             )
             
@@ -453,19 +439,18 @@ def solve_hocbf_qp_js(dt_val, q_full_curr, dq_full_curr, ddq_nominal_arm_val, cu
             if h_val < 0.07: # Only add constraints if h is small (indicating a risk of collision) [0.15m^2 * 3 = 0.0675]
 
                 # --- 2. Calculate kinematics for the closest point on the ROBOT ---
-                J_C, v_C, a_drift_C = get_point_kinematics(
-                    link_info['start_frame_id'], link_info['end_frame_id'], t, dq_full_curr
+                J_C, v_C = get_point_kinematics(
+                    link_info['start_frame_id'], link_info['end_frame_id'], t1, dq_full_curr
                 )
 
                 # --- 3. Calculate relative velocity and acceleration drift ---
                 # Assuming obstacle velocity is constant, so acceleration is zero
                 v_rel = v_C - obs_item['velocity']
-                a_drift_rel = a_drift_C # - a_obs_drift (which is 0)
 
                 # --- 4. Use the new HOCBF functions for capsules ---
                 Lf_h_val = Lf_h(p_rel, v_rel)
                 psi_val = psi_func(h_val, Lf_h_val, current_gamma_js_val)
-                Lf_psi_val = Lf_psi(v_rel, a_drift_rel, p_rel, Lf_h_val, current_gamma_js_val)
+                Lf_psi_val = Lf_psi(v_rel, Lf_h_val, current_gamma_js_val)
                 Lg_psi_val_arm = Lg_psi(J_C, p_rel)
 
                 constraints_qp.append(Lg_psi_val_arm @ u_qp_js >= -Lf_psi_val - current_beta_js_val * psi_val)
@@ -486,25 +471,24 @@ def solve_hocbf_qp_js(dt_val, q_full_curr, dq_full_curr, ddq_nominal_arm_val, cu
         p1_2 = data.oMf[start_frame_id_2].translation
         p2_2 = data.oMf[end_frame_id_2].translation
 
-        c_link1, c_link2, t = get_closest_points_between_segments(p1_1, p2_1, p1_2, p2_2)
+        c_link1, c_link2, t1, t2 = get_closest_points_between_segments(p1_1, p2_1, p1_2, p2_2)
         p_rel = c_link1 - c_link2
         h_val = h_func(p_rel, link_radius_val_1, link_radius_val_2)
         if h_val < 0.03:  # Only add constraints if h is small (indicating a risk of self-collision)
             # Calculate kinematics for the closest point on the first link
-            J_C1, v_C1, a_drift_C1 = get_point_kinematics(
-                start_frame_id_1, end_frame_id_1, t, dq_full_curr
+            J_C1, v_C1 = get_point_kinematics(
+                start_frame_id_1, end_frame_id_1, t1, dq_full_curr
             )
-            J_C2, v_C2, a_drift_C2 = get_point_kinematics(
-                start_frame_id_2, end_frame_id_2, t, dq_full_curr
+            J_C2, v_C2 = get_point_kinematics(
+                start_frame_id_2, end_frame_id_2, t2, dq_full_curr
             )
             # Calculate relative velocity and acceleration drift
             v_rel = v_C1 - v_C2
-            a_drift_rel = a_drift_C1 - a_drift_C2
             J_rel = J_C1 - J_C2
 
             Lf_h_val = Lf_h(p_rel, v_rel)
             psi_val = psi_func(h_val, Lf_h_val, current_gamma_js_val)
-            Lf_psi_val = Lf_psi(v_rel, a_drift_rel, p_rel, Lf_h_val, current_gamma_js_val)
+            Lf_psi_val = Lf_psi(v_rel, Lf_h_val, current_gamma_js_val)
             Lg_psi_val_arm = Lg_psi(J_rel, p_rel)
 
             constraints_qp.append(Lg_psi_val_arm @ u_qp_js >= -Lf_psi_val - current_beta_js_val * psi_val)
@@ -721,6 +705,8 @@ class CbfControllerNode(Node):
         self.pid_integral_error = np.zeros(NUM_ARM_JOINTS)
         self.pid_previous_error = np.zeros(NUM_ARM_JOINTS)
 
+        self.target = [0.307, 0.0, 0.487] # Initial target position for the end-effector in Cartesian space
+
 
         # --- Control Loop Frequencies ---
         self.mpc_frequency = 10  # Hz
@@ -863,12 +849,12 @@ class CbfControllerNode(Node):
             p2 = data.oMf[end_frame_id].translation
 
             for obs_idx, obs_item in enumerate(self.current_obstacles_list_sim):
-                c_robot, c_obs, t = get_closest_points_between_segments(
+                c_robot, c_obs, t1, t2 = get_closest_points_between_segments(
                     p1, p2, obs_item['pose_start'], obs_item['pose_end']
                 )
                 
-                J_C, v_C, a_drift_C = get_point_kinematics(
-                    link_info['start_frame_id'], link_info['end_frame_id'], t, self.dq_full_pin
+                J_C, v_C = get_point_kinematics(
+                    link_info['start_frame_id'], link_info['end_frame_id'], t1, self.dq_full_pin
                 )
 
                 dist_centers = np.linalg.norm(c_robot - c_obs)
@@ -880,7 +866,6 @@ class CbfControllerNode(Node):
                 min_h_current = min(min_h_current, h_val)
                 
                 v_rel = v_C - obs_item['velocity']
-                a_drift_rel = a_drift_C
                 
                 Lf_h_val = Lf_h(p_rel, v_rel)
 
@@ -907,17 +892,16 @@ class CbfControllerNode(Node):
             p2 = data.oMf[end_frame_id].translation
 
             for obs_idx, obs_item in enumerate(self.current_obstacles_list_sim):
-                c_robot, c_obs, t = get_closest_points_between_segments(
+                c_robot, c_obs, t1, t2 = get_closest_points_between_segments(
                     p1, p2, obs_item['pose_start'], obs_item['pose_end']
                 )
 
-                J_C, v_C, a_drift_C = get_point_kinematics(
-                    link_info['start_frame_id'], link_info['end_frame_id'], t, self.dq_full_pin
+                J_C, v_C = get_point_kinematics(
+                    link_info['start_frame_id'], link_info['end_frame_id'], t1, self.dq_full_pin
                 )
 
                 p_rel = c_robot - c_obs
                 v_rel = v_C - obs_item['velocity']
-                a_drift_rel = a_drift_C
 
                 Lf_h_val = Lf_h(p_rel, v_rel)
                 psi_val = psi_func(h_func(p_rel, link_radius_val, obs_item['radius'], self.d_margin), Lf_h_val, self.current_gamma_js)
@@ -925,7 +909,7 @@ class CbfControllerNode(Node):
                 # --- 4. Update min_psi (using the dynamically adjusted gamma for THIS step) ---
                 min_psi_current = min(min_psi_current, psi_val)
                 
-                Lf_psi_val = Lf_psi(v_rel, a_drift_rel, p_rel, Lf_h_val, self.current_gamma_js)
+                Lf_psi_val = Lf_psi(v_rel, Lf_h_val, self.current_gamma_js)
                 Lg_psi_val = Lg_psi(J_C, p_rel).flatten()
                 
                 sup_Lg_psi_u = np.sum(np.where(
@@ -944,9 +928,6 @@ class CbfControllerNode(Node):
                 key = f"{link_info['name']}_obs{obs_idx}"
                 current_h_psi_values[f'h_{key}'] = h_func(p_rel, link_radius_val, obs_item['radius'], self.d_margin)
                 current_h_psi_values[f'psi_{key}'] = psi_val
-
-                current_h_psi_values[f'a_drift_norm_{key}'] = np.linalg.norm(a_drift_C)
-                current_h_psi_values[f'Lf_psi_{key}'] = Lf_psi_val
 
         # --- Adjust beta_js AFTER gamma ---
         if max_beta_required_for_psi > -float('inf'):
@@ -992,6 +973,7 @@ class CbfControllerNode(Node):
             self.destroy_node()
             return
 
+        
         # --- HIERARCHICAL CONTROL LOGIC ---
         # 1. Determine the current time relative to the MPC plan's start time
         time_since_plan_start = current_time_s - self.mpc_trajectory_start_time
@@ -1006,6 +988,7 @@ class CbfControllerNode(Node):
 
         q_target = self.mpc_planned_trajectory['q'][:, target_index]
         dq_target = self.mpc_planned_trajectory['dq'][:, target_index]
+        
         
         # 3. Use the PID controller to get the nominal acceleration
         ddq_nominal_arm_cmd = joint_space_pid_controller(
