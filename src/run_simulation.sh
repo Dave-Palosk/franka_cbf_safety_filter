@@ -4,7 +4,7 @@
 # and forcefully cleans up Gazebo processes between each run.
 
 # Terminal command
-# exec src/franka_ros2/cbf_safety_filter/src/run_all_experiments.sh
+# exec src/franka_ros2/cbf_safety_filter/src/run_simulation.sh
 
 # --- Configuration ---
 PACKAGE_NAME="cbf_safety_filter"
@@ -32,7 +32,7 @@ for scenario_file in "$SCENARIO_DIR"/*.yaml; do
   
   # Launch the simulation, redirecting all output to the log file.
   # The 'timeout' command is a safety net in case the simulation hangs.
-  timeout 70s ros2 launch cbf_safety_filter gazebo_joint_position_controller.launch.py \
+  timeout 70s ros2 launch cbf_safety_filter gazebo_simulation.launch.py \
     load_gripper:=true \
     franka_hand:='franka_hand' \
     scenario_config_file:="$scenario_file" \

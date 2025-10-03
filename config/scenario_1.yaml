@@ -1,50 +1,93 @@
 # Scenario configuration for HOCBF controller test
 
-# Parameters for the HOCBF node (HOCBF_v1.py)
 hocbf_controller:
   ros__parameters:
-    # The goal position for the end-effector
-    goal_ee_pos: [0.3068, -0.65, 0.55]
-
-    # Initial CBF parameters. These can be overridden by the dynamic adjustment in your script.
+    goal_ee_pos:
+    - 0.7
+    - 0.0
+    - 0.5
     gamma_js: 2.0
     beta_js: 3.0
-
-    # Safety margin added to the sum of robot control point and obstacle radii
     d_margin: 0.0
-
-    # File path for saving the output plots and data.
-    # An empty string means it will generate a timestamped name.
-    # You can provide a base name like "scenario_1_results"
-    output_data_basename: "scenario_1"
-
-    # Parameters for automation
-    goal_tolerance_m: 0.02     # Success if within 2 cm of goal
-    goal_settle_time_s: 2.0    # Must stay within tolerance for 2 seconds
-    max_sim_duration_s: 80.0   # Timeout after 80 seconds
-
-
-
-# List of obstacles to be spawned in the world
-# The scenario_manager.py node will read this and spawn them.
+    output_data_basename: scenario_1
+    goal_maintolerance_m: 0.02
+    goal_settle_time_s: 1.5
+    max_sim_duration_s: 60.0
 obstacles:
-  - name: "obstacle_1"
-    pose:
-      position: [0.3068, 0.25, 0.55]
-      orientation: [0.0, 0.0, 0.0, 1.0] # Quaternion (x, y, z, w)
-    size:
-      radius: 0.15 # for cylinder/sphere
-      # dimensions: [x, y, z] # for box
-    velocity: # Optional, if you want to simulate moving obstacles
-      linear: [0.0, 0.0, 0.0] # m/s
-      angular: [0.0, 0.0, 0.0] # rad/s
+- name: obstacle_0
+  pose_start:
+    position:
+    - 0.5
+    - 0.1
+    - 0.65
+  pose_end:
+    position:
+    - 0.5
+    - -0.1
+    - 0.65
+  size:
+    radius: 0.05
+  velocity:
+    linear:
+    - 0.0
+    - 0.0
+    - 0.0
 
-  - name: "obstacle_2"
-    pose:
-      position: [0.3068, -0.25, 0.55]
-      orientation: [0.0, 0.0, 0.0, 1.0]
-    size:
-      radius: 0.15
-    velocity: # Optional, if you want to simulate moving obstacles
-      linear: [0.0, 0.0, 0.0] # m/s
-      angular: [0.0, 0.0, 0.0] # rad/s
+    obstacles:
+- name: obstacle_1
+  pose_start:
+    position:
+    - 0.5
+    - 0.1
+    - 0.55
+  pose_end:
+    position:
+    - 0.5
+    - -0.1
+    - 0.55
+  size:
+    radius: 0.05
+  velocity:
+    linear:
+    - 0.0
+    - 0.0
+    - 0.0
+
+    obstacles:
+- name: obstacle_2
+  pose_start:
+    position:
+    - 0.5
+    - 0.1
+    - 0.45
+  pose_end:
+    position:
+    - 0.5
+    - -0.1
+    - 0.45
+  size:
+    radius: 0.05
+  velocity:
+    linear:
+    - 0.0
+    - 0.0
+    - 0.0
+
+- name: obstacle_3
+  pose_start:
+    position:
+    - 0.5
+    - 0.1
+    - 0.35
+  pose_end:
+    position:
+    - 0.5
+    - -0.1
+    - 0.35
+  size:
+    radius: 0.05
+  velocity:
+    linear:
+    - 0.0
+    - 0.0
+    - 0.0

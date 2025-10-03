@@ -36,12 +36,12 @@ Q_INITIAL[:7] = np.array([0.0, -np.pi/4, 0.0, -3*np.pi/4, 0.0, np.pi/2, np.pi/4]
 
 # Define the robot's control links (must match HOCBF_v1.py)
 LINKS_DEF = [
-    {'name': 'link1', 'start_frame_name': 'fr3_link0', 'end_frame_name': 'fr3_link1', 'radius': 0.08},
+    {'name': 'link2_base', 'start_frame_name': 'fr3_link2_offset1', 'end_frame_name': 'fr3_link2_offset2', 'radius': 0.055},
     {'name': 'link2', 'start_frame_name': 'fr3_link2', 'end_frame_name': 'fr3_link3', 'radius': 0.06},
     {'name': 'joint4',   'start_frame_name': 'fr3_link4', 'end_frame_name': 'fr3_link5_offset1', 'radius': 0.065},
     {'name': 'forearm1',   'start_frame_name': 'fr3_link5_offset2', 'end_frame_name': 'fr3_link5_offset3', 'radius': 0.035},
     {'name': 'forearm2',   'start_frame_name': 'fr3_link5_offset3', 'end_frame_name': 'fr3_link5', 'radius': 0.05},
-    {'name': 'wrist',     'start_frame_name': 'fr3_link7', 'end_frame_name': 'fr3_hand',  'radius': 0.055},
+    {'name': 'wrist',     'start_frame_name': 'fr3_link7_offset1', 'end_frame_name': 'fr3_hand',  'radius': 0.055},
     {'name': 'hand',     'start_frame_name': 'fr3_hand_offset1', 'end_frame_name': 'fr3_hand_offset2',  'radius': 0.03},
     {'name': 'end_effector',      'start_frame_name': 'fr3_hand_tcp',  'end_frame_name': 'fr3_hand_tcp', 'radius': 0.03},
 ]
@@ -246,7 +246,7 @@ def main():
                             'output_data_basename': scenario_name,
                             'goal_maintolerance_m': 0.02,
                             'goal_settle_time_s': 1.5,
-                            'max_sim_duration_s': 30.0
+                            'max_sim_duration_s': 60.0
                         }
                     },
                     'obstacles': obstacles

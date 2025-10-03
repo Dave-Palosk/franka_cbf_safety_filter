@@ -1,11 +1,11 @@
 hocbf_controller:
   ros__parameters:
     goal_ee_pos:
-    - -0.3587
-    - 0.0702
-    - 0.3623
-    gamma_js: 10.0
-    beta_js: 15.0
+    - -0.0376
+    - -0.5177
+    - 0.4374
+    gamma_js: 2.0
+    beta_js: 3.0
     d_margin: 0.0
     output_data_basename: scenario_0220
     goal_maintolerance_m: 0.02
@@ -15,16 +15,16 @@ obstacles:
 - name: obstacle_0
   pose_start:
     position:
-    - -0.0107
-    - -0.3423
-    - 0.2878
+    - -0.1806
+    - -0.4863
+    - 0.7597
   pose_end:
     position:
-    - 0.0547
-    - -0.1799
-    - 0.5436
+    - 0.1035
+    - -0.4053
+    - 0.5283
   size:
-    radius: 0.0983
+    radius: 0.0994
   velocity:
     linear:
     - 0.0
@@ -33,16 +33,16 @@ obstacles:
 - name: obstacle_1
   pose_start:
     position:
-    - -0.0559
-    - -0.233
-    - 0.3491
+    - 0.4836
+    - 0.1676
+    - 0.4449
   pose_end:
     position:
-    - 0.2079
-    - -0.2742
-    - 0.2707
+    - 0.5389
+    - 0.4353
+    - 0.6744
   size:
-    radius: 0.0941
+    radius: 0.1163
   velocity:
     linear:
     - 0.0
@@ -51,16 +51,16 @@ obstacles:
 - name: obstacle_2
   pose_start:
     position:
-    - -0.269
-    - 0.1468
-    - 0.1635
+    - -0.1718
+    - -0.2373
+    - 0.5882
   pose_end:
     position:
-    - -0.269
-    - 0.1468
-    - 0.1635
+    - -0.1718
+    - -0.2373
+    - 0.5882
   size:
-    radius: 0.1442
+    radius: 0.0641
   velocity:
     linear:
     - 0.0
@@ -69,16 +69,16 @@ obstacles:
 - name: obstacle_3
   pose_start:
     position:
-    - 0.5743
-    - -0.3827
-    - 0.26
+    - 0.6778
+    - -0.5007
+    - 0.5225
   pose_end:
     position:
-    - 0.4292
-    - -0.1482
-    - 0.2424
+    - 0.7
+    - -0.5948
+    - 0.544
   size:
-    radius: 0.1254
+    radius: 0.1489
   velocity:
     linear:
     - 0.0
@@ -87,16 +87,16 @@ obstacles:
 - name: obstacle_4
   pose_start:
     position:
-    - 0.5001
-    - 0.0127
-    - 0.69
+    - 0.2126
+    - -0.2304
+    - 0.7593
   pose_end:
     position:
-    - 0.5001
-    - 0.0127
-    - 0.69
+    - 0.2126
+    - -0.2304
+    - 0.7593
   size:
-    radius: 0.0504
+    radius: 0.0833
   velocity:
     linear:
     - 0.0

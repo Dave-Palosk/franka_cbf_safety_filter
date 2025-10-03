@@ -20,17 +20,17 @@ from ament_index_python.packages import get_package_share_directory
 from launch.actions import DeclareLaunchArgument, OpaqueFunction, ExecuteProcess, RegisterEventHandler, Shutdown
 from launch.event_handlers import OnProcessExit, OnShutdown
 
-from launch.actions import IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch import LaunchContext, LaunchDescription
 from launch.actions import IncludeLaunchDescription
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import  LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch.actions import AppendEnvironmentVariable
 from launch_ros.actions import Node
 from launch.conditions import IfCondition
 
-def get_robot_description(context: LaunchContext, arm_id, load_gripper, franka_hand):
+def get_robot_description(context: LaunchContext, arm_id, load_gripper, franka_hand, use_sim_time):
     print(f"\n[DEBUG] Loading robot configuration:")
     print(f"- arm_id: {context.perform_substitution(arm_id)}")
     print(f"- load_gripper: {context.perform_substitution(load_gripper)}")
@@ -47,6 +47,7 @@ def get_robot_description(context: LaunchContext, arm_id, load_gripper, franka_h
         arm_id_str + '.urdf.xacro'
     )
 
+    print(f"[DEBUG] URDF file path: {franka_xacro_file}")
     if not os.path.exists(franka_xacro_file):
         print(f"[ERROR] URDF file not found at {franka_xacro_file}")
         raise FileNotFoundError(f"URDF file not found: {franka_xacro_file}")
@@ -111,11 +112,18 @@ def prepare_launch_description():
             arm_id_name,
             default_value='fr3',
             description='Available values: fr3, fp3 and fer')
+    
+    # Set use_sim_time for all nodes in the launch file
+    use_sim_time_arg = DeclareLaunchArgument(
+        'use_sim_time',
+        default_value='true',
+        description='Use simulation (Gazebo) clock if true')
+    use_sim_time = LaunchConfiguration('use_sim_time')
 
     # Get robot description
     robot_state_publisher = OpaqueFunction(
         function=get_robot_description,
-        args=[arm_id, load_gripper, franka_hand])
+        args=[arm_id, load_gripper, franka_hand, use_sim_time])
 
     # Gazebo Sim
     
@@ -124,6 +132,8 @@ def prepare_launch_description():
     gz_args_expression = PythonExpression([
         "'-r -s empty.sdf' if '", headless, "' == 'True' else '-r empty.sdf'"
     ])
+    # for faster simulatoin use: ~/franka_ros2_ws/install/cbf_safety_filter/include/worlds/fast_world.sdf instead of empty.sdf in headless mode
+
     pkg_ros_gz_sim = get_package_share_directory('ros_gz_sim')
     gazebo_empty_world = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -139,7 +149,6 @@ def prepare_launch_description():
         output='screen',
     )
 
-
     # Visualize in RViz
     rviz_file = os.path.join(get_package_share_directory('franka_description'), 'rviz',
                              'visualize_franka.rviz')
@@ -150,6 +159,7 @@ def prepare_launch_description():
              # Condition to launch only if headless is 'false'
              condition=IfCondition(PythonExpression(['not ', headless])),
     )
+    
 
     # The spawner node will wait for the controller_manager to be ready, avoiding the race condition
     joint_state_broadcaster_spawner = Node(
@@ -159,11 +169,18 @@ def prepare_launch_description():
         output="screen",
     )
 
+    joint_position_controller_spawner = Node(
+        package="controller_manager",
+        executable="spawner",
+        arguments=["joint_position_controller", "--controller-manager", "/controller_manager"],
+        output="screen",
+    )
+
     # --- Pass the scenario file to the HOCBF Node ---
     hocbf_controller_node = Node(
         package='cbf_safety_filter',
-        executable='safety_filter.py',
-        name='safety_filter',
+        executable='simulation_HOCBF.py',
+        name='simulation_HOCBF',
         output='screen',
         parameters=[
             {'scenario_config_file': scenario_config_file}
@@ -189,14 +206,16 @@ def prepare_launch_description():
         # Add all arguments
         set_env_vars_resources,
         headless_arg,
-        scenario_config_file_arg,
+        scenario_config_file_arg, # Add the new argument
         load_gripper_launch_argument,
         franka_hand_launch_argument,
         arm_id_launch_argument,
-        rviz,
+        use_sim_time_arg,
+        
         # Add other actions and nodes
         gazebo_empty_world,
         robot_state_publisher,
+        # rviz,
         spawn,
 
         RegisterEventHandler(
@@ -208,7 +227,15 @@ def prepare_launch_description():
         RegisterEventHandler(
             event_handler=OnProcessExit(
                 target_action=joint_state_broadcaster_spawner,
-                on_exit=[hocbf_controller_node],
+                on_exit=[joint_position_controller_spawner],
+            )
+        ),
+
+        # Start the HOCBF controller only after the position controller is loaded and active.
+        RegisterEventHandler(
+            event_handler=OnProcessExit(
+                target_action=joint_position_controller_spawner,
+                on_exit=[hocbf_controller_node]
             )
         ),
 
@@ -220,6 +247,7 @@ def prepare_launch_description():
                 {'source_list': ['joint_states'], 'rate': 30}
             ],
         ),
+        # hocbf_controller_node,
         RegisterEventHandler(
             event_handler=OnProcessExit(
                 target_action=hocbf_controller_node,
@@ -233,5 +261,11 @@ def prepare_launch_description():
 
 def generate_launch_description():
     launch_description = prepare_launch_description()
+
+    set_env_vars_resources = AppendEnvironmentVariable(
+        'GZ_SIM_RESOURCE_PATH',
+        os.path.join(get_package_share_directory('franka_description')))
+
+    launch_description.add_action(set_env_vars_resources)
 
     return launch_description

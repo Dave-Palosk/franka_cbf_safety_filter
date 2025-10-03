@@ -19,7 +19,7 @@
 #include <cmath>
 #include <exception>
 #include <string>
-#include <mutex> // Add for std::mutex
+#include <mutex>
 #include <vector>
 
 #include <Eigen/Eigen>
@@ -70,23 +70,12 @@ void JointPositionController::joint_command_callback(
 controller_interface::return_type JointPositionController::update(
     const rclcpp::Time& /*time*/,
     const rclcpp::Duration& /*period*/) {
-//  if (initialization_flag_) {
-//    for (int i = 0; i < num_joints; ++i) {
-//      initial_q_.at(i) = state_interfaces_[i].get_value();
-//    }
-//    initialization_flag_ = false;
-//  }
 
   // Lock the mutex to safely read desired_joint_positions_
   std::lock_guard<std::mutex> lock(desired_joint_positions_mutex_);
   if (desired_joint_positions_.empty()) {
     // If no command has been received yet, maintain current position or use initial_q_
     // For this example, let's just log a message and do nothing until a command arrives.
-    // Alternatively, you could make it hold the current position:
-    // for (int i = 0; i < num_joints; ++i) {
-    //   command_interfaces_[i].set_value(state_interfaces_[i].get_value());
-    // }
-    // Or continue with the periodic motion if initialization_flag_ is true.
 
     RCLCPP_DEBUG_THROTTLE(get_node()->get_logger(), *get_node()->get_clock(), 1000, "Waiting for initial joint commands...");
     return controller_interface::return_type::OK; // Do nothing if no command
@@ -96,11 +85,11 @@ controller_interface::return_type JointPositionController::update(
   // Apply the received desired joint positions through exponential smoothing filter
   for (int i = 0; i < num_joints; ++i) {
     // The formula: new = (1-alpha)*old + alpha*target
+    // alpha defined in the header
     smoothed_joint_positions_[i] = (1 - alpha_) * smoothed_joint_positions_[i] + alpha_ * desired_joint_positions_[i];
 
     // Command the new, smoothed position to the robot
     command_interfaces_[i].set_value(smoothed_joint_positions_[i]);
-    // command_interfaces_[i].set_value(desired_joint_positions_.at(i));
   }
 
   return controller_interface::return_type::OK;
@@ -111,7 +100,7 @@ CallbackReturn JointPositionController::on_init() {
     auto_declare<bool>("gazebo", false);
     auto_declare<std::string>("robot_description", "");
   } catch (const std::exception& e) {
-    fprintf(stderr, "Exception thrown during init stage with message: %s \n", e.what());
+    RCLCPP_ERROR(get_node()->get_logger(), "Exception thrown during init stage with message: %s \n", e.what());
     return CallbackReturn::ERROR;
   }
   return CallbackReturn::SUCCESS;
@@ -137,26 +126,18 @@ CallbackReturn JointPositionController::on_configure(
 
   // Initialize the subscriber here in on_configure
   // The topic name must match what your Python node publishes to.
-  // We'll use '/joint_position_controller/external_commands' to distinguish it.
   joint_command_subscriber_ = get_node()->create_subscription<std_msgs::msg::Float64MultiArray>(
       "/joint_position_controller/external_commands",
-      10, // QoS history depth
+      10,
       std::bind(&JointPositionController::joint_command_callback, this, std::placeholders::_1));
 
   RCLCPP_INFO(get_node()->get_logger(), "JointPositionController configured. Subscribing to /joint_position_controller/external_commands");
-
-  // Optionally, initialize desired_joint_positions_ with current state when configured
-  // This helps prevent a jump if the first command arrives after a delay.
-  // However, `state_interfaces_` are not guaranteed to be active yet in `on_configure`.
-  // Best to do this in `on_activate`.
 
   return CallbackReturn::SUCCESS;
 }
 
 CallbackReturn JointPositionController::on_activate(
     const rclcpp_lifecycle::State& /*previous_state*/) {
-  initialization_flag_ = true;
-
   // When activated, set desired_joint_positions_ to current actual positions
   // to avoid a sudden jump when the first external command is received.
   std::lock_guard<std::mutex> lock(desired_joint_positions_mutex_);

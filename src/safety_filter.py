@@ -225,12 +225,12 @@ def get_point_kinematics(start_frame_id, end_frame_id, t, dq_full_curr):
     
 
 # --- HOCBF-QP Safety Filter ---
-def solve_hocbf_qp_js(dt_val, q_full_curr, dq_full_curr, ddq_nominal_arm_val, current_gamma_js_val, current_beta_js_val, d_margin, current_obstacles_list_sim, active_links_list, node_logger):
+def solve_hocbf_qp(dt_val, q_full_curr, dq_full_curr, ddq_nominal, current_gamma_js_val, current_beta_js_val, d_margin, current_obstacles_list_sim, active_links_list, node_logger):
     u_qp_js = cp.Variable(NUM_ARM_JOINTS)
 
-    ddq_nominal_arm_np = np.array(ddq_nominal_arm_val).flatten()
+    ddq_nominal_np = np.array(ddq_nominal).flatten()
 
-    cost = cp.sum_squares(u_qp_js - ddq_nominal_arm_np)
+    cost = cp.sum_squares(u_qp_js - ddq_nominal_np)
     constraints_qp = []
     qp_failed_flag = False
 
@@ -385,12 +385,11 @@ class CbfControllerNode(Node):
         obstacle_params_from_config = config.get('obstacles', [])
         
         self.goal_ee_pos = np.array(hocbf_params.get('goal_ee_pos', [0.3, 0.0, 0.5])) # Default value
-        self.initial_gamma_js = float(hocbf_params.get('gamma_js', 2.0))
-        self.initial_beta_js = float(hocbf_params.get('beta_js', 3.0))
-        self.initial_gamma_js = 2.0
-        self.initial_beta_js = 3.0
+        self.initial_gamma = float(hocbf_params.get('gamma_js', 2.0))
+        self.initial_beta = float(hocbf_params.get('beta_js', 3.0))
         self.d_margin = float(hocbf_params.get('d_margin', 0.0))
-        # self.d_margin = max(0.002, self.d_margin)
+        # Uncomment to enforce a minimum margin
+        # self.d_margin = max(0.005, self.d_margin)
         self.output_basename = hocbf_params.get('output_data_basename', 'unnamed_scenario')
         self.initial_ee_pos = None
 
@@ -398,7 +397,6 @@ class CbfControllerNode(Node):
         self.goal_tolerance = float(hocbf_params.get('goal_tolerance_m', 0.02)) # Default 2cm
         self.goal_settle_time_s = float(hocbf_params.get('goal_settle_time_s', 2.0)) # Must be at goal for 2s
         self.max_sim_duration_s = float(hocbf_params.get('max_sim_duration_s', 60.0)) # Timeout after 1 minute
-        self.max_sim_duration_s = 60.0
         self.start_time_ns = self.get_clock().now().nanoseconds
         self.at_goal_timer = 0.0 # Time we have been within goal tolerance
         self.is_shutdown_initiated = False # Flag to prevent multiple shutdowns
@@ -446,67 +444,24 @@ class CbfControllerNode(Node):
             10
         )
 
-        # Publisher for RViz markers
-        self.marker_publisher_1 = self.create_publisher(
-            Marker,
-            '/visualization_marker_1', # Standard topic for RViz markers
-            10
-        )
+        ### Publisher for RViz markers
+        # Multiple markers are necessary as one marker constistently visualizes at max 5 elments in RViz
 
-        self.marker_publisher_2 = self.create_publisher(
-            Marker,
-            '/visualization_marker_2',
-            10
-        )
+        # --- Publishers for obstacle markers ---
+        self.marker_publisher_1 = self.create_publisher(Marker,'/visualization_marker_1', 10)
+        self.marker_publisher_2 = self.create_publisher(Marker,'/visualization_marker_2', 10)
+        self.marker_publisher_3 = self.create_publisher(Marker,'/visualization_marker_3', 10)
+        self.marker_publisher_4 = self.create_publisher(Marker,'/visualization_marker_4', 10)
 
-        self.marker_publisher_3 = self.create_publisher(
-            Marker,
-            '/visualization_marker_3',
-            10
-        )
-
-        self.marker_publisher_4 = self.create_publisher(
-            Marker,
-            '/visualization_marker_4',
-            10
-        )
-
-        self.bot_marker_publisher_1 = self.create_publisher(
-            Marker,
-            '/bot_marker_1',
-            10
-        )
-
-        self.bot_marker_publisher_2 = self.create_publisher(
-            Marker,
-            '/bot_marker_2',
-            10
-        )
-
-        self.bot_marker_publisher_3 = self.create_publisher(
-            Marker,
-            '/bot_marker_3',
-            10
-        )
-
-        self.bot_marker_publisher_4 = self.create_publisher(
-            Marker,
-            '/bot_marker_4',
-            10
-        )
-
-        self.bot_marker_publisher_5 = self.create_publisher(
-            Marker,
-            '/bot_marker_5',
-            10
-        )
+        # --- Publishers for robot link markers ---
+        self.bot_marker_publisher_1 = self.create_publisher(Marker,'/bot_marker_1', 10)
+        self.bot_marker_publisher_2 = self.create_publisher(Marker,'/bot_marker_2', 10)
+        self.bot_marker_publisher_3 = self.create_publisher(Marker,'/bot_marker_3', 10)
+        self.bot_marker_publisher_4 = self.create_publisher(Marker,'/bot_marker_4', 10)
+        self.bot_marker_publisher_5 = self.create_publisher(Marker,'/bot_marker_5', 10)
 
         # --- Publisher for the EE Trajectory Marker ---
-        self.trajectory_marker_publisher = self.create_publisher(
-            Marker,
-            '/ee_trajectory_marker',
-            10
-        )
+        self.trajectory_marker_publisher = self.create_publisher(Marker,'/ee_trajectory_marker', 10)
 
         self.robot_joint_names = [
             'fr3_joint1', 'fr3_joint2', 'fr3_joint3', 'fr3_joint4',
@@ -521,8 +476,8 @@ class CbfControllerNode(Node):
         self.ee_position_history = []
 
         # --- Dynamic CBF parameters (initially global values) ---
-        self.current_gamma_js = self.initial_gamma_js
-        self.current_beta_js = self.initial_beta_js
+        self.current_gamma_js = self.initial_gamma
+        self.current_beta_js = self.initial_beta
 
         self.current_joint_positions = np.zeros(self.num_arm_joints)
         self.current_joint_velocities = np.zeros(self.num_arm_joints)
@@ -541,7 +496,7 @@ class CbfControllerNode(Node):
         # High-frequency loop for PID tracking and safety filter
         self.pid_timer = self.create_timer(self.dt, self.safety_filter_loop)
 
-        # Timer for publishing markers (can be slower than control loop)
+        # Timer for publishing markers (can be commented out if RViz visualization is not needed)
         self.marker_publish_timer = self.create_timer(0.5, self.publish_markers) # Publish markers every 0.5 seconds
 
 
@@ -596,7 +551,7 @@ class CbfControllerNode(Node):
 
         q_arm_current = self.current_joint_positions
         dq_arm_current = self.current_joint_velocities
-        ddq_nominal_arm_cmd = self.latest_nominal_acceleration
+        ddq_nominal = self.latest_nominal_acceleration
 
         min_h_current = float('inf')
         min_psi_current = float('inf')
@@ -676,7 +631,7 @@ class CbfControllerNode(Node):
         # --- Adjust gamma_js FIRST ---
         if max_gamma_required_for_h > -float('inf'):
             adjusted_gamma = max(0.0, max_gamma_required_for_h + GAMMA_ADJUST_BUFFER)
-            self.current_gamma_js = max(self.initial_gamma_js, min(adjusted_gamma, GAMMA_MAX_LIMIT))
+            self.current_gamma_js = max(self.initial_gamma, min(adjusted_gamma, GAMMA_MAX_LIMIT))
         # else: keep current_gamma_js
 
         # Now recalc beta with updated gamma
@@ -729,7 +684,7 @@ class CbfControllerNode(Node):
         # --- Adjust beta_js AFTER gamma ---
         if max_beta_required_for_psi > -float('inf'):
             adjusted_beta = max(0.0, max_beta_required_for_psi + BETA_ADJUST_BUFFER)
-            self.current_beta_js = max(self.initial_beta_js, min(adjusted_beta, BETA_MAX_LIMIT))
+            self.current_beta_js = max(self.initial_beta, min(adjusted_beta, BETA_MAX_LIMIT))
         # else: keep current_beta_js
 
 
@@ -774,14 +729,14 @@ class CbfControllerNode(Node):
         
         # Safety filter (CBF-QP)
         # Pass the node's logger to the QP solver for better logging
-        ddq_safe_arm_cmd, qp_solved = solve_hocbf_qp_js(
-            self.dt, self.q_full_pin, self.dq_full_pin, ddq_nominal_arm_cmd, self.current_gamma_js,
+        ddq_safe_arm_cmd, qp_solved = solve_hocbf_qp(
+            self.dt, self.q_full_pin, self.dq_full_pin, ddq_nominal, self.current_gamma_js,
             self.current_beta_js, self.d_margin, self.current_obstacles_list_sim, active_links, self.get_logger()
         )
         
-        # Use nominal controller
+        # Uncomment to test the nominal controller (deactive the filter)
         # qp_solved = True
-        # ddq_safe_arm_cmd = ddq_nominal_arm_cmd
+        # ddq_safe_arm_cmd = ddq_nominal
         
         
         if not qp_solved:
@@ -807,7 +762,7 @@ class CbfControllerNode(Node):
             'joint_dq': dq_arm_current.tolist(),    # Store as list
             'next_dq': next_dq_arm.tolist(),  # Store as list
             'joint_ddq': ddq_safe_arm_cmd.tolist(),  # Store as list
-            'joint_ddq_nominal': ddq_nominal_arm_cmd.tolist(),
+            'joint_ddq_nominal': ddq_nominal.tolist(),
             'current_gamma_js': self.current_gamma_js,
             'max_gamma_required_for_h': max_gamma_required_for_h, # Store the value that was calculated
             'current_beta_js': self.current_beta_js, # Fixed for now, but storing
@@ -823,6 +778,7 @@ class CbfControllerNode(Node):
         msg = Float64MultiArray()
         msg.data = positions_array.tolist()
         self.joint_command_publisher.publish(msg)
+
 
     # --- Marker Publishing Functions ---
     def create_sphere_marker(self, marker_id, position, radius, r, g, b, a, frame_id="world"):
@@ -1185,8 +1141,6 @@ class CbfControllerNode(Node):
         num_joints = len(self.robot_joint_names)
         fig_joint_data, axs_joint_data = plt.subplots(num_joints, 3, figsize=(15, 3 * num_joints), sharex=True)
         fig_joint_data.suptitle('Joint States and Accelerations Over Time', fontsize=16)
-
-        q_range = q_max_arm - q_min_arm
 
         for i, joint_name in enumerate(self.robot_joint_names):
             axs_joint_data[i, 0].plot(time_history, joint_q_history_extracted[joint_name], label=f'{joint_name} ($q$)')

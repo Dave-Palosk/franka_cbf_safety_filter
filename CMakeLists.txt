@@ -79,7 +79,7 @@ install(
 )
 
 install(
-  PROGRAMS src/HOCBF.py
+  PROGRAMS src/simulation_HOCBF.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

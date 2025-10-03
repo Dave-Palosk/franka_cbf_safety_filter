@@ -42,7 +42,7 @@ for scenario_name in "${SCENARIOS_TO_RUN[@]}"; do
   echo "-----------------------------------------------------------------------"
   
   # Launch the simulation
-  timeout 70s ros2 launch cbf_safety_filter gazebo_joint_position_controller.launch.py \
+  timeout 70s ros2 launch cbf_safety_filter gazebo_simulation.launch.py \
     load_gripper:=true \
     franka_hand:='franka_hand' \
     scenario_config_file:="$scenario_file" \
