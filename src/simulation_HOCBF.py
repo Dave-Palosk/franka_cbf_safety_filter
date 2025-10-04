@@ -16,6 +16,12 @@ import yaml
 import pandas as pd
 import time as timer
 
+# =============================================================================
+# CONTROLLER SELECTION FLAG - CHANGE THIS TO SWITCH CONTROLLERS
+# ======================================================================
+USE_MPC_CONTROLLER = True  # If False, uses the joint-space PD nominal controller
+
+
 # --- Pinocchio Model Setup ---
 URDF_FILENAME = "fr3_robot.urdf"
 package_directory = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -224,7 +230,7 @@ def get_point_kinematics(start_frame_id, end_frame_id, t, dq_full_curr):
     return J_C, v_C
 
 # --- Nominal Controller (Joint Space PD to Cartesian Goal) ---
-def nominal_controller_js(q_arm_curr, dq_arm_curr, target_ee_pos_cartesian, target):
+def nominal_controller_pd(q_arm_curr, dq_arm_curr, target_ee_pos_cartesian, target):
     Kp_cart = 500.0 # Your current Kp
     Kd_cart = 50.0 # Your current Kd
     alpha = 0.01
@@ -288,7 +294,7 @@ def nominal_controller_js(q_arm_curr, dq_arm_curr, target_ee_pos_cartesian, targ
     
     return ddq_nominal_arm, target
 
-def joint_space_pid_controller(q_current, dq_current, q_target, dq_target):
+def joint_space_pd_controller(q_current, dq_current, q_target, dq_target):
     """
     A simple joint-space PD controller to track a target state.
     """
@@ -402,7 +408,7 @@ def nominal_controller_mpc(q_arm_curr, dq_arm_curr, target_ee_pos_cartesian, dt)
     
 
 # --- HOCBF-QP Safety Filter ---
-def solve_hocbf_qp_js(dt_val, q_full_curr, dq_full_curr, ddq_nominal_arm_val, current_gamma_js_val, current_beta_js_val, d_margin, current_obstacles_list_sim, active_links_list, node_logger):
+def solve_hocbf_qp(dt_val, q_full_curr, dq_full_curr, ddq_nominal_arm_val, current_gamma_js_val, current_beta_js_val, d_margin, current_obstacles_list_sim, active_links_list, node_logger):
     u_qp_js = cp.Variable(NUM_ARM_JOINTS)
 
     ddq_nominal_arm_np = np.array(ddq_nominal_arm_val).flatten()
@@ -544,6 +550,10 @@ class CbfControllerNode(Node):
     def __init__(self):
         super().__init__('cbf_controller_node')
         self.get_logger().info('CBF Controller Node has been started.')
+
+        # Log which controller is being used
+        controller_type = "MPC + PID Tracking" if USE_MPC_CONTROLLER else "Joint-Space PD"
+        self.get_logger().info(f'Using {controller_type} controller')
 
         # --- Declare and Load Parameters ---
         self.declare_parameter('scenario_config_file', '')
@@ -695,12 +705,13 @@ class CbfControllerNode(Node):
         self.q_full_pin = np.zeros(model.nq)
         self.dq_full_pin = np.zeros(model.nv)
 
-        # --- Hierarchical Controller State ---
-        self.mpc_planned_trajectory = None  # To store the trajectory from MPC
-        self.mpc_trajectory_start_time = 0.0
-        self.mpc_solve_time = 0.0
-        self.pid_integral_error = np.zeros(NUM_ARM_JOINTS)
-        self.pid_previous_error = np.zeros(NUM_ARM_JOINTS)
+        # MPC-specific state (only used if USE_MPC_CONTROLLER is True)
+        if USE_MPC_CONTROLLER:
+            self.mpc_planned_trajectory = None
+            self.mpc_trajectory_start_time = 0.0
+            self.mpc_solve_time = 0.0
+            self.mpc_frequency = 10  # Hz
+            self.mpc_dt = 1.0 / self.mpc_frequency
 
         self.target = [0.307, 0.0, 0.487] # Initial target position for the end-effector in Cartesian space
 
@@ -710,14 +721,16 @@ class CbfControllerNode(Node):
         self.pid_frequency = 50  # Hz
 
         self.mpc_dt = 1.0 / self.mpc_frequency
-        self.dt = 1.0 / self.pid_frequency
+        self.dt = 1.0 / self.pd_frequency
 
         # --- Timers for Each Loop ---
         # High-frequency loop for PID tracking and safety filter
-        self.pid_timer = self.create_timer(self.dt, self.pid_and_safety_loop)
+        self.pd_timer = self.create_timer(self.dt, self.pd_and_safety_loop)
 
-        # Low-frequency loop for MPC planning
-        self.mpc_timer = self.create_timer(self.mpc_dt, self.mpc_planning_loop)
+        # Only create MPC timer if using MPC controller
+        if USE_MPC_CONTROLLER:
+            self.mpc_timer = self.create_timer(self.mpc_dt, self.mpc_planning_loop)
+            self.get_logger().info(f'MPC planning loop created at {self.mpc_frequency} Hz')
 
         # Timer for publishing markers (can be slower than control loop)
         self.marker_publish_timer = self.create_timer(0.5, self.publish_markers) # Publish markers every 0.5 seconds
@@ -787,9 +800,9 @@ class CbfControllerNode(Node):
         if not self.received_first_joint_state or self.is_shutdown_initiated:
             return
         
-        # If we don't have a plan from the MPC yet, do nothing
-        if self.mpc_planned_trajectory is None:
-            self.get_logger().info("Waiting for first MPC trajectory...", throttle_duration_sec=1)
+        # Check if we need MPC trajectory and don't have it yet
+        if USE_MPC_CONTROLLER and self.mpc_planned_trajectory is None:
+            self.get_logger().info('Waiting for first MPC trajectory...', throttle_duration_sec=1)
             return
         
         for obs in self.current_obstacles_list_sim:
@@ -971,36 +984,41 @@ class CbfControllerNode(Node):
             return
 
         
-        # --- HIERARCHICAL CONTROL LOGIC ---
-        # 1. Determine the current time relative to the MPC plan's start time
-        time_since_plan_start = current_time_s - self.mpc_trajectory_start_time
+        # =================================================================
+        # CONTROLLER SELECTION - Generate nominal acceleration
+        # =================================================================
+        if USE_MPC_CONTROLLER:
+            # --- MPC + PID Tracking Controller ---
+            # 1. Determine the current time relative to the MPC plan's start time
+            time_since_plan_start = current_time_s - self.mpc_trajectory_start_time
 
-        # 2. Find the correct setpoint from the MPC's trajectory
-        target_index = int(np.floor(time_since_plan_start / self.mpc_dt)) + 1
-        
-        # Ensure the index is within the bounds of the trajectory
-        num_steps_in_plan = self.mpc_planned_trajectory['q'].shape[1]
-        if target_index >= num_steps_in_plan:
-            target_index = num_steps_in_plan - 1
+            # 2. Find the correct setpoint from the MPC's trajectory
+            target_index = int(np.floor(time_since_plan_start / self.mpc_dt)) + 1
+            
+            # Ensure the index is within the bounds of the trajectory
+            num_steps_in_plan = self.mpc_planned_trajectory['q'].shape[1]
+            if target_index >= num_steps_in_plan:
+                target_index = num_steps_in_plan - 1
 
-        q_target = self.mpc_planned_trajectory['q'][:, target_index]
-        dq_target = self.mpc_planned_trajectory['dq'][:, target_index]
-        
-        
-        # 3. Use the PID controller to get the nominal acceleration
-        ddq_nominal_arm_cmd = joint_space_pid_controller(
-            q_arm_current, dq_arm_current, q_target, dq_target
-        )
-        
+            q_target = self.mpc_planned_trajectory['q'][:, target_index]
+            dq_target = self.mpc_planned_trajectory['dq'][:, target_index]
+            
+            # 3. Use the PID controller to track the MPC trajectory
+            ddq_nominal_arm_cmd = joint_space_pd_controller(
+                q_arm_current, dq_arm_current, q_target, dq_target
+            )
+        else:
+            # --- Joint-Space PD Controller ---
+            # Direct operational-space control to Cartesian goal
+            ddq_nominal_arm_cmd, self.target = nominal_controller_pd(
+                q_arm_current, dq_arm_current, self.goal_ee_pos, self.target
+            )
+
         start_solve_time = timer.time()
-
-        # ddq_nominal_arm_cmd, self.target = nominal_controller_js(q_arm_current, dq_arm_current, self.goal_ee_pos, self.target)
-        # ddq_nominal_arm_cmd = nominal_controller_mpc(q_arm_current, dq_arm_current, self.goal_ee_pos, self.dt)
-
         
         # Safety filter (CBF-QP)
         # Pass the node's logger to the QP solver for better logging
-        ddq_safe_arm_cmd, qp_solved = solve_hocbf_qp_js(
+        ddq_safe_arm_cmd, qp_solved = solve_hocbf_qp(
             self.dt, self.q_full_pin, self.dq_full_pin, ddq_nominal_arm_cmd, self.current_gamma_js,
             self.current_beta_js, self.d_margin, self.current_obstacles_list_sim, active_links, self.get_logger()
         )
