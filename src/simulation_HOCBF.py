@@ -1451,45 +1451,6 @@ class CbfControllerNode(Node):
         
         fig_joint_data.tight_layout(rect=[0, 0, 1, 0.96])
 
-        # Save fig_joint_data
-        fig_joint_data.savefig(f"{base_filename}_joint_states.png")
-
-        fig_accel, axs_accel = plt.subplots(num_joints, 1, figsize=(10, 14), sharex=True)
-        fig_accel.suptitle('Joint Accelerations Over Time', fontsize=16)
-
-        for i, joint_name in enumerate(self.robot_joint_names):
-            # Plot applied (safe) acceleration
-            axs_accel[i].plot(time_history, joint_ddq_history_extracted[joint_name], label=f'{joint_name} (Applied)')
-            
-            # Plot nominal (desired) acceleration
-            axs_accel[i].plot(time_history, joint_ddq_nominal_history_extracted[joint_name], label='Nominal', alpha=0.7)
-            
-            # Plot acceleration limits
-            axs_accel[i].axhline(ddq_max_arm[i], color='r', linestyle=':', alpha=0.5)
-            axs_accel[i].axhline(ddq_min_arm[i], color='r', linestyle=':', alpha=0.5)
-            
-            # Mark QP infeasible points
-            for t_inf in infeasible_times:
-                axs_accel[i].axvline(t_inf, color='magenta', linestyle=':', lw=0.8, alpha=0.2)
-                
-            axs_accel[i].set_ylabel('Accel (rad/s²)')
-            axs_accel[i].legend(loc='upper right')
-            axs_accel[i].grid(True)
-            axs_accel[i].set_ylim(ddq_min_arm[i] * 1.5, ddq_max_arm[i] * 1.5)
-
-        # Add a single legend entry for the infeasibility markers
-        if infeasible_times:
-            axs_accel[0].axvline(infeasible_times[0], color='magenta', linestyle=':', lw=0.8, alpha=0.2, label='QP Infeasible')
-            # Redraw the legend to include the new entry
-            axs_accel[0].legend(loc='upper right')
-
-
-        axs_accel[-1].set_xlabel('Time (s)')
-        fig_accel.tight_layout(rect=[0, 0.03, 1, 0.96]) # Adjust layout
-        
-        # Save the new figure to its own file
-        fig_accel.savefig(f"{base_filename}_joint_accelerations.png")
-
         # --- Plot all individual h_kj values ---
         fig_all_h, ax_all_h = plt.subplots(figsize=(12, 8))
         ax_all_h.set_title('All $h_{kj}$ Values Over Time (Control Point-Obstacle Pairs)')

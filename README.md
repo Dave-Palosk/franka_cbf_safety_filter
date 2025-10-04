@@ -237,6 +237,8 @@ Or read from the topic of the safety filter `/joint_position_controller/external
 - `goal_tolerance_m`: Distance tolerance for reaching goal (default: 0.02m)
 - `goal_settle_time_s`: Time to remain at goal before stopping (default: 2.0s)
 
+## Documentation
+
 ## Controllers
 
 ### 1. MPC Nominal Controller
